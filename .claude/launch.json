@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "fkst-web",
+      "runtimeExecutable": "/Users/eanzhao/Code/fkst-audit-log/web/serve.sh",
+      "runtimeArgs": [],
+      "port": 5173
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+kind = "package.composed"
+name = "audit-analyzer"
+persistence_class = "judgment_pipeline"
+
+[code]
+root = "."
+
+[event_deps]
+packages = ["audit-watcher", "alert-proxy"]

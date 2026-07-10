@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FKST Audit Monitor 预览</title>
+    <style>
+      :root {
+        --bg: oklch(98% 0.005 250);
+        --surface: oklch(100% 0 0);
+        --surface-2: oklch(96% 0.006 250);
+        --fg: oklch(22% 0.02 240);
+        --muted: oklch(50% 0.018 240);
+        --border: oklch(90% 0.008 240);
+        --accent: oklch(58% 0.16 145);
+        --info: oklch(57% 0.15 235);
+        --warn: oklch(67% 0.17 75);
+        --danger: oklch(56% 0.2 28);
+        --success: oklch(54% 0.15 145);
+        --font-display: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+        --font-body: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+        --font-mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, Menlo, monospace;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: oklch(20% 0.014 250);
+          --surface: oklch(24% 0.015 250);
+          --surface-2: oklch(28% 0.015 250);
+          --fg: oklch(93% 0.01 250);
+          --muted: oklch(70% 0.02 250);
+          --border: oklch(38% 0.012 250);
+          --accent: oklch(70% 0.14 145);
+          --info: oklch(70% 0.12 235);
+          --warn: oklch(78% 0.14 75);
+          --danger: oklch(68% 0.18 28);
+          --success: oklch(68% 0.13 145);
+        }
+      }
+
+      * { box-sizing: border-box; }
+      html {
+        background: var(--bg);
+        color: var(--fg);
+        color-scheme: light dark;
+        font-family: var(--font-body);
+        font-size: 16px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+      body { margin: 0; min-width: 320px; }
+      button, input, select { font: inherit; }
+      button { cursor: pointer; }
+
+      .app-shell {
+        margin: 0 auto;
+        padding: 24px 0 40px;
+        width: min(1440px, calc(100% - 32px));
+      }
+      .app-header {
+        align-items: flex-start;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 24px;
+        justify-content: space-between;
+        padding-bottom: 18px;
+      }
+      .eyebrow, .tile-label {
+        color: var(--muted);
+        display: block;
+        font-size: 12px;
+        font-weight: 650;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      h1, h2 { font-family: var(--font-display); letter-spacing: 0; margin: 0; }
+      h1 { font-size: 44px; line-height: 1.08; max-width: 13ch; }
+      h2 { font-size: 20px; line-height: 1.2; }
+      .header-meta {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        justify-content: flex-end;
+      }
+      .meta-line { color: var(--muted); font-size: 13px; white-space: nowrap; }
+      .icon-button {
+        align-items: center;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--fg);
+        display: inline-flex;
+        height: 38px;
+        justify-content: center;
+        width: 38px;
+      }
+      .icon-button:hover { border-color: color-mix(in oklch, var(--accent), var(--border) 55%); }
+      .tab-bar {
+        display: flex;
+        gap: 6px;
+        margin-top: 18px;
+        overflow-x: auto;
+        padding-bottom: 4px;
+      }
+      .tab {
+        align-items: center;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        color: var(--muted);
+        display: inline-flex;
+        flex: 0 0 auto;
+        gap: 8px;
+        min-height: 40px;
+        padding: 0 12px;
+        white-space: nowrap;
+      }
+      .tab.active { background: var(--surface); border-color: var(--border); color: var(--fg); }
+      .toolbar {
+        align-items: center;
+        display: grid;
+        gap: 10px;
+        grid-template-columns: minmax(220px, 1fr) 180px;
+        margin: 14px 0 16px;
+      }
+      .search-box, .select-box {
+        align-items: center;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--muted);
+        display: flex;
+        gap: 8px;
+        min-height: 42px;
+        padding: 0 12px;
+      }
+      .search-box input, .select-box select {
+        background: transparent;
+        border: 0;
+        color: var(--fg);
+        min-width: 0;
+        outline: 0;
+        width: 100%;
+      }
+      .source-warning, .config-note {
+        align-items: center;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--muted);
+        display: flex;
+        gap: 9px;
+        margin-bottom: 16px;
+        padding: 10px 12px;
+      }
+      .view-stack { display: grid; gap: 16px; }
+      .metric-strip {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+      }
+      .metric-cell { min-width: 0; padding: 18px; }
+      .metric-cell + .metric-cell { border-left: 1px solid var(--border); }
+      .metric-cell span { color: var(--muted); display: block; font-size: 13px; letter-spacing: 0.02em; }
+      .metric-cell strong {
+        display: block;
+        font-family: var(--font-mono);
+        font-size: 28px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0;
+        line-height: 1.1;
+        margin-top: 6px;
+      }
+      .panel {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      .grid-panel { display: grid; grid-template-columns: repeat(3, 1fr); }
+      .service-tile { min-width: 0; padding: 18px; }
+      .service-tile + .service-tile { border-left: 1px solid var(--border); }
+      .service-head {
+        align-items: flex-start;
+        display: flex;
+        gap: 14px;
+        justify-content: space-between;
+      }
+      .service-tile p, .finding-card p {
+        color: var(--muted);
+        margin: 12px 0 0;
+        max-width: 70ch;
+        overflow-wrap: anywhere;
+      }
+      .tile-foot {
+        align-items: center;
+        color: var(--muted);
+        display: flex;
+        font-size: 13px;
+        gap: 7px;
+        margin-top: 18px;
+      }
+      .split-panel { display: grid; grid-template-columns: 1fr 1fr; }
+      .split-panel > div { padding: 18px; }
+      .split-panel > div + div { border-left: 1px solid var(--border); }
+      .section-heading { align-items: center; display: flex; gap: 8px; margin-bottom: 14px; }
+      .kv-grid {
+        display: grid;
+        gap: 8px 14px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin: 0;
+      }
+      .kv-grid div { border-top: 1px solid var(--border); min-width: 0; padding-top: 8px; }
+      .kv-grid dt { color: var(--muted); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
+      .kv-grid dd {
+        font-family: var(--font-mono);
+        font-size: 13px;
+        margin: 3px 0 0;
+        overflow-wrap: anywhere;
+      }
+      .table-wrap { overflow-x: auto; }
+      table {
+        border-collapse: collapse;
+        font-size: 14px;
+        min-width: 980px;
+        width: 100%;
+      }
+      th, td {
+        border-bottom: 1px solid var(--border);
+        padding: 11px 12px;
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        background: var(--surface-2);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 650;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      td { overflow-wrap: anywhere; }
+      tr:last-child td { border-bottom: 0; }
+      .finding-list { display: grid; gap: 12px; }
+      .finding-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        display: grid;
+        gap: 18px;
+        grid-template-columns: minmax(0, 1fr) 320px;
+        padding: 18px;
+      }
+      .finding-head { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+      .finding-side { border-left: 1px solid var(--border); display: grid; gap: 6px; padding-left: 18px; }
+      .badge {
+        align-items: center;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        display: inline-flex;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.06em;
+        line-height: 1;
+        min-height: 24px;
+        padding: 0 8px;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .badge-success { background: color-mix(in oklch, var(--success), white 88%); border-color: color-mix(in oklch, var(--success), white 65%); color: color-mix(in oklch, var(--success), black 25%); }
+      .badge-warning { background: color-mix(in oklch, var(--warn), white 86%); border-color: color-mix(in oklch, var(--warn), white 58%); color: color-mix(in oklch, var(--warn), black 38%); }
+      .badge-danger { background: color-mix(in oklch, var(--danger), white 88%); border-color: color-mix(in oklch, var(--danger), white 60%); color: color-mix(in oklch, var(--danger), black 18%); }
+      .badge-info { background: color-mix(in oklch, var(--info), white 88%); border-color: color-mix(in oklch, var(--info), white 60%); color: color-mix(in oklch, var(--info), black 25%); }
+      .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+      .compact { display: inline-block; max-width: 34ch; overflow-wrap: anywhere; }
+      .muted { color: var(--muted); }
+      .empty-state {
+        align-items: flex-start;
+        background: var(--surface);
+        border: 1px dashed var(--border);
+        border-radius: 8px;
+        color: var(--muted);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 28px;
+      }
+      .hidden { display: none !important; }
+
+      @media (max-width: 900px) {
+        .app-shell { width: min(100% - 24px, 760px); padding-top: 18px; }
+        .app-header, .split-panel, .finding-card { display: grid; grid-template-columns: 1fr; }
+        .header-meta { justify-content: flex-start; }
+        .toolbar { grid-template-columns: 1fr; }
+        .metric-strip, .grid-panel { grid-template-columns: 1fr 1fr; }
+        .metric-cell + .metric-cell, .service-tile + .service-tile, .split-panel > div + div { border-left: 0; }
+        .metric-cell:nth-child(2n), .service-tile:nth-child(2n) { border-left: 1px solid var(--border); }
+        .metric-cell:nth-child(n + 3), .service-tile:nth-child(n + 3), .split-panel > div + div { border-top: 1px solid var(--border); }
+        .finding-side { border-left: 0; border-top: 1px solid var(--border); padding-left: 0; padding-top: 14px; }
+      }
+
+      @media (max-width: 640px) {
+        h1 { font-size: 32px; }
+        .metric-strip, .grid-panel, .kv-grid { grid-template-columns: 1fr; }
+        .metric-cell:nth-child(2n), .service-tile:nth-child(2n) { border-left: 0; }
+        .metric-cell + .metric-cell, .service-tile + .service-tile { border-top: 1px solid var(--border); }
+        table, thead, tbody, th, td, tr { display: block; }
+        table { min-width: 0; }
+        thead { display: none; }
+        tr { border-bottom: 1px solid var(--border); padding: 10px 12px; }
+        td {
+          align-items: flex-start;
+          border-bottom: 0;
+          display: grid;
+          gap: 8px;
+          grid-template-columns: 112px minmax(0, 1fr);
+          padding: 6px 0;
+        }
+        td::before {
+          color: var(--muted);
+          content: attr(data-label);
+          font-size: 12px;
+          font-weight: 650;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app-shell" data-od-id="app-shell">
+      <header class="app-header" data-od-id="app-header">
+        <div class="title-block">
+          <span class="eyebrow">FKST Audit Monitor</span>
+          <h1 data-od-id="page-title">本地审计管线监控</h1>
+        </div>
+        <div class="header-meta">
+          <span class="badge badge-warning">示例预览</span>
+          <span class="meta-line">静态预览 · 正式数据需通过 ./boot.sh</span>
+          <button class="icon-button" type="button" aria-label="刷新数据" data-od-id="refresh-button">↻</button>
+        </div>
+      </header>
+
+      <nav class="tab-bar" aria-label="监控视图" data-od-id="tab-bar">
+        <button class="tab active" type="button" data-tab="pipeline" data-od-id="tab-pipeline">▣ 管线状态</button>
+        <button class="tab" type="button" data-tab="events" data-od-id="tab-events">⌕ 审计事件</button>
+        <button class="tab" type="button" data-tab="findings" data-od-id="tab-findings">◇ 批次 / 发现</button>
+        <button class="tab" type="button" data-tab="alerts" data-od-id="tab-alerts">◎ 告警</button>
+        <button class="tab" type="button" data-tab="config" data-od-id="tab-config">☰ 配置</button>
+      </nav>
+
+      <div class="toolbar" data-od-id="filter-toolbar">
+        <label class="search-box">
+          ⌕
+          <input id="search" placeholder="搜索 actor、resource、batch、dedup..." aria-label="搜索审计数据" />
+        </label>
+        <label class="select-box">
+          ⌁
+          <select id="range" aria-label="时间范围">
+            <option>15 分钟</option>
+            <option>1 小时</option>
+            <option selected>6 小时</option>
+            <option>24 小时</option>
+            <option>全部</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="source-warning" data-od-id="source-warning">
+        ⚠ 当前为可直接打开的静态预览页；真实 runtime 数据、adapter API 和自动刷新在 `./boot.sh` 启动后生效。
+      </div>
+
+      <section class="view view-stack" data-view="pipeline" data-od-id="pipeline-view">
+        <section class="metric-strip" data-od-id="metric-strip">
+          <div class="metric-cell"><span>服务在线</span><strong>3/3</strong></div>
+          <div class="metric-cell"><span>可疑事件</span><strong>2</strong></div>
+          <div class="metric-cell"><span>Findings</span><strong>1</strong></div>
+          <div class="metric-cell"><span>告警模式</span><strong>dry-run</strong></div>
+        </section>
+
+        <section class="panel grid-panel" data-od-id="service-status-panel">
+          <article class="service-tile" data-od-id="service-audit-watcher">
+            <div class="service-head"><div><span class="tile-label">audit-watcher</span><h2>audit-watcher</h2></div><span class="badge badge-success">healthy</span></div>
+            <p>监听 watch/*.log，并通过 NyxID 轮询 Aevatar /api/audit/trail。</p>
+            <div class="tile-foot">◷ 7 分钟前</div>
+          </article>
+          <article class="service-tile" data-od-id="service-audit-analyzer">
+            <div class="service-head"><div><span class="tile-label">audit-analyzer</span><h2>audit-analyzer</h2></div><span class="badge badge-success">healthy</span></div>
+            <p>读取 audit_batch 缓存，调用 Codex/LLM 分析并核验证据行。</p>
+            <div class="tile-foot">◷ 5 分钟前</div>
+          </article>
+          <article class="service-tile" data-od-id="service-alert-proxy">
+            <div class="service-head"><div><span class="tile-label">alert-proxy</span><h2>alert-proxy</h2></div><span class="badge badge-info">dry-run</span></div>
+            <p>记录 alert_request 和 dedup 状态；未设置 FKST_ALERT_WRITE=1 时不会发送 webhook。</p>
+            <div class="tile-foot">◷ 5 分钟前</div>
+          </article>
+        </section>
+
+        <section class="panel split-panel" data-od-id="runtime-summary-panel">
+          <div>
+            <div class="section-heading"><h2>Aevatar polling 摘要</h2></div>
+            <dl class="kv-grid">
+              <div><dt>状态</dt><dd>enabled</dd></div>
+              <div><dt>service</dt><dd>aevatar</dd></div>
+              <div><dt>path</dt><dd>/api/audit/trail</dd></div>
+              <div><dt>take</dt><dd>100</dd></div>
+              <div><dt>max pages</dt><dd>5</dd></div>
+              <div><dt>scope</dt><dd>__all__</dd></div>
+            </dl>
+          </div>
+          <div>
+            <div class="section-heading"><h2>运行边界</h2></div>
+            <dl class="kv-grid">
+              <div><dt>runtime</dt><dd>.fkst/run/runtime</dd></div>
+              <div><dt>durable</dt><dd>.fkst/run/durable</dd></div>
+              <div><dt>watch</dt><dd>watch/*.log</dd></div>
+              <div><dt>alert</dt><dd>dry-run only</dd></div>
+            </dl>
+          </div>
+        </section>
+      </section>
+
+      <section class="view panel hidden" data-view="events" data-od-id="events-view">
+        <div class="empty-state"><strong>暂无审计事件</strong><span>等待 audit-watcher 写入 Aevatar 或本地 watch 日志。</span></div>
+      </section>
+
+      <section class="view finding-list hidden" data-view="findings" data-od-id="findings-view">
+        <div class="empty-state"><strong>暂无分析发现</strong><span>等待 audit-analyzer 产出真实 finding。</span></div>
+      </section>
+
+      <section class="view panel hidden" data-view="alerts" data-od-id="alerts-view">
+        <div class="empty-state"><strong>暂无告警</strong><span>真实 finding 达到阈值后才会出现告警记录。</span></div>
+      </section>
+
+      <section class="view panel hidden" data-view="config" data-od-id="config-view">
+        <div class="config-note">🔐 敏感项只显示脱敏摘要；NyxID、webhook、identity key 不会在 UI 中原样展示。</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>变量</th><th>值</th><th>来源</th><th>敏感</th></tr></thead>
+            <tbody>
+              <tr data-search="FKST_ALERT_WRITE"><td data-label="变量"><span class="mono">FKST_ALERT_WRITE</span></td><td data-label="值"><span class="mono">0</span></td><td data-label="来源"><span class="badge badge-info">default</span></td><td data-label="敏感"><span class="badge">plain</span></td></tr>
+              <tr data-search="ALERT_WEBHOOK_URL"><td data-label="变量"><span class="mono">ALERT_WEBHOOK_URL</span></td><td data-label="值"><span class="mono">https://hooks.example/.../9f2a</span></td><td data-label="来源"><span class="badge badge-success">env</span></td><td data-label="敏感"><span class="badge badge-warning">masked</span></td></tr>
+              <tr data-search="AEVATAR_AUDIT_IDENTITY_KEY_ID"><td data-label="变量"><span class="mono">AEVATAR_AUDIT_IDENTITY_KEY_ID</span></td><td data-label="值"><span class="mono">ae***42</span></td><td data-label="来源"><span class="badge badge-success">env</span></td><td data-label="敏感"><span class="badge badge-warning">masked</span></td></tr>
+              <tr data-search="AEVATAR_AUDIT_PATH"><td data-label="变量"><span class="mono">AEVATAR_AUDIT_PATH</span></td><td data-label="值"><span class="mono">/api/audit/trail</span></td><td data-label="来源"><span class="badge badge-info">default</span></td><td data-label="敏感"><span class="badge">plain</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <script>
+      const tabs = document.querySelectorAll('.tab');
+      const views = document.querySelectorAll('.view');
+      const search = document.getElementById('search');
+
+      function activate(name) {
+        tabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.tab === name));
+        views.forEach((view) => view.classList.toggle('hidden', view.dataset.view !== name));
+        filterRows();
+      }
+
+      function filterRows() {
+        const q = (search.value || '').trim().toLowerCase();
+        document.querySelectorAll('[data-search]').forEach((row) => {
+          const hit = !q || row.dataset.search.toLowerCase().includes(q) || row.textContent.toLowerCase().includes(q);
+          row.classList.toggle('hidden', !hit);
+        });
+      }
+
+      tabs.forEach((tab) => tab.addEventListener('click', () => activate(tab.dataset.tab)));
+      search.addEventListener('input', filterRows);
+    </script>
+  </body>
+</html>

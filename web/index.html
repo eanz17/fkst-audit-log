@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FKST Audit Monitor</title>
+    <style>
+      :root {
+        --bg: oklch(98% 0.005 250);
+        --surface: oklch(100% 0 0);
+        --fg: oklch(22% 0.02 240);
+        --muted: oklch(50% 0.018 240);
+        --border: oklch(90% 0.008 240);
+        --warn: oklch(67% 0.17 75);
+        --success: oklch(54% 0.15 145);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: oklch(20% 0.014 250);
+          --surface: oklch(24% 0.015 250);
+          --fg: oklch(93% 0.01 250);
+          --muted: oklch(70% 0.02 250);
+          --border: oklch(38% 0.012 250);
+          --warn: oklch(78% 0.14 75);
+          --success: oklch(68% 0.13 145);
+        }
+      }
+      * { box-sizing: border-box; }
+      html {
+        background: var(--bg);
+        color: var(--fg);
+        color-scheme: light dark;
+        font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      }
+      body { margin: 0; }
+      .boot-fallback {
+        margin: 0 auto;
+        padding: 24px 0 40px;
+        width: min(960px, calc(100% - 32px));
+      }
+      .boot-fallback header {
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 16px;
+        justify-content: space-between;
+        padding-bottom: 18px;
+      }
+      .boot-fallback h1 {
+        font-size: 36px;
+        letter-spacing: 0;
+        line-height: 1.1;
+        margin: 0;
+      }
+      .boot-fallback p {
+        color: var(--muted);
+        margin: 10px 0 0;
+        max-width: 68ch;
+      }
+      .badge {
+        align-items: center;
+        border: 1px solid color-mix(in oklch, var(--warn), white 58%);
+        border-radius: 999px;
+        color: color-mix(in oklch, var(--warn), black 38%);
+        display: inline-flex;
+        font: 650 12px/1 ui-monospace, Menlo, monospace;
+        height: 26px;
+        letter-spacing: 0.06em;
+        padding: 0 9px;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .fallback-grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(3, 1fr);
+        margin-top: 18px;
+      }
+      .fallback-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px;
+      }
+      .fallback-card span {
+        color: var(--muted);
+        display: block;
+        font-size: 12px;
+        font-weight: 650;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .fallback-card strong {
+        display: block;
+        font: 650 24px/1.1 ui-monospace, Menlo, monospace;
+        margin-top: 6px;
+      }
+      .fallback-actions {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        margin-top: 12px;
+        padding: 16px;
+      }
+      .fallback-actions code {
+        background: oklch(96% 0.006 250);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        display: inline-block;
+        font-family: ui-monospace, Menlo, monospace;
+        margin-top: 8px;
+        padding: 6px 8px;
+      }
+      .fallback-actions a {
+        color: color-mix(in oklch, var(--success), black 25%);
+        font-weight: 650;
+      }
+      @media (max-width: 720px) {
+        .boot-fallback header { display: grid; }
+        .fallback-grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <main class="boot-fallback" data-od-id="fallback-preview">
+        <header>
+          <div>
+            <span class="badge">需要 dev server</span>
+            <h1>FKST 本地审计管线监控</h1>
+            <p>这是 Vite/React 正式入口的静态兜底画面。启动完整站点（引擎 + adapter + UI）只需在仓库根运行 <code>./boot.sh</code>；只想单独起网页可在 <code>web/</code> 下运行 <code>./serve.sh</code>。只想看界面稿可直接打开 <code>open-design/preview.html</code>。</p>
+          </div>
+        </header>
+        <section class="fallback-grid" aria-label="预览摘要">
+          <div class="fallback-card"><span>管线</span><strong>3 服务</strong></div>
+          <div class="fallback-card"><span>告警模式</span><strong>dry-run</strong></div>
+          <div class="fallback-card"><span>数据源</span><strong>只读 adapter</strong></div>
+        </section>
+        <section class="fallback-actions">
+          <p>启动完整站点（引擎 + adapter + UI，仓库根）：</p>
+          <code>./boot.sh</code>
+          <p>只起网页（adapter + UI）：</p>
+          <code>cd web &amp;&amp; ./serve.sh</code>
+          <p>只看界面稿（静态）：</p>
+          <code>open-design/preview.html</code>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

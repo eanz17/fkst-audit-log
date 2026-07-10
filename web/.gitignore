@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+# tsc -b emits these from tsconfig.node.json (composite build)
+vite.config.js
+vite.config.d.ts

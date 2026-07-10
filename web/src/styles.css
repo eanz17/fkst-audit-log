@@ -1,0 +1,844 @@
+:root {
+  --bg: oklch(98% 0.005 250);
+  --surface: oklch(100% 0 0);
+  --surface-2: oklch(96% 0.006 250);
+  --fg: oklch(22% 0.02 240);
+  --muted: oklch(46% 0.02 240);
+  --border: oklch(90% 0.008 240);
+  --accent: oklch(58% 0.16 145);
+  --info: oklch(57% 0.15 235);
+  --warn: oklch(67% 0.17 75);
+  --danger: oklch(56% 0.2 28);
+  --success: oklch(54% 0.15 145);
+  --font-display: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+
+/* Theme-aware: the whole app follows the viewer's OS light/dark preference.
+   Only the neutral tokens flip; accent hues are lifted slightly for contrast
+   on the dark surfaces. Because every surface/text/border reads from a token,
+   this single override themes the entire UI. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: oklch(20% 0.014 250);
+    --surface: oklch(24% 0.015 250);
+    --surface-2: oklch(28% 0.015 250);
+    --fg: oklch(93% 0.01 250);
+    --muted: oklch(70% 0.02 250);
+    --border: oklch(38% 0.012 250);
+    --accent: oklch(70% 0.14 145);
+    --info: oklch(70% 0.12 235);
+    --warn: oklch(78% 0.14 75);
+    --danger: oklch(68% 0.18 28);
+    --success: oklch(68% 0.13 145);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+  color: var(--fg);
+  color-scheme: light dark;
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.5;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.app-shell {
+  width: min(1440px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 24px 0 40px;
+}
+
+.app-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 18px;
+}
+
+.title-block {
+  min-width: 0;
+}
+
+.eyebrow,
+.tile-label {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1,
+h2 {
+  font-family: var(--font-display);
+  letter-spacing: 0;
+  margin: 0;
+}
+
+h1 {
+  font-size: 28px;
+  line-height: 1.15;
+  max-width: 22ch;
+}
+
+h2 {
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.header-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.meta-line {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.icon-button {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg);
+  display: inline-flex;
+  height: 38px;
+  justify-content: center;
+  width: 38px;
+}
+
+.icon-button:hover {
+  border-color: color-mix(in oklch, var(--accent), var(--border) 55%);
+}
+
+/* Keyboard focus: never remove the outline without a visible replacement. */
+button:focus-visible,
+a:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.search-box:focus-within,
+.select-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--accent), transparent 72%);
+}
+
+.tab-bar {
+  display: flex;
+  gap: 6px;
+  margin-top: 18px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.tab {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.tab.active {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+.toolbar {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(220px, 1fr) 180px;
+  margin: 14px 0 16px;
+}
+
+.toolbar-single {
+  grid-template-columns: minmax(220px, 520px);
+}
+
+.event-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -4px 0 14px;
+}
+
+.event-summary {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+
+.event-summary > div {
+  align-items: baseline;
+  background: var(--surface);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px;
+}
+
+.event-summary > div + div {
+  border-left: 1px solid var(--border);
+}
+
+.summary-label {
+  color: var(--muted);
+  flex: 0 0 100%;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.event-summary strong {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.summary-subtle {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.filter-chip {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  display: inline-flex;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.filter-chip:hover {
+  border-color: color-mix(in oklch, var(--accent), var(--border) 55%);
+  color: var(--fg);
+}
+
+.filter-chip.active {
+  background: color-mix(in oklch, var(--accent), var(--surface) 90%);
+  border-color: color-mix(in oklch, var(--accent), var(--border) 42%);
+  color: color-mix(in oklch, var(--accent), var(--fg) 20%);
+}
+
+.chip-count {
+  align-items: center;
+  background: var(--surface-2);
+  border-radius: 999px;
+  color: var(--fg);
+  display: inline-flex;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  justify-content: center;
+  min-width: 22px;
+  padding: 2px 6px;
+}
+
+.search-box,
+.select-box {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  display: flex;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 12px;
+}
+
+.search-box input,
+.select-box select {
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  min-width: 0;
+  outline: 0;
+  width: 100%;
+}
+
+.search-box input::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.source-warning,
+.error-panel,
+.loading-panel,
+.config-note {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  display: flex;
+  gap: 9px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+}
+
+.error-panel {
+  border-color: color-mix(in oklch, var(--danger), var(--border) 55%);
+  color: var(--danger);
+}
+
+.view-stack {
+  display: grid;
+  gap: 16px;
+}
+
+/* Persistent status ribbon: the global at-a-glance summary on every tab. The
+   1px grid gap over a --border background draws the cell dividers; each cell is
+   a button that jumps to the tab explaining it, with a tone-colored left edge. */
+.status-ribbon {
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(4, 1fr);
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+
+.ribbon-cell {
+  background: var(--surface);
+  border: 0;
+  border-left: 3px solid transparent;
+  display: block;
+  min-width: 0;
+  padding: 14px 16px 14px 13px;
+  text-align: left;
+  transition: background 0.12s ease;
+}
+
+.ribbon-cell:hover {
+  background: var(--surface-2);
+}
+
+.ribbon-label {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ribbon-value {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  margin-top: 5px;
+}
+
+.ribbon-note {
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  margin-top: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ribbon-success { border-left-color: var(--success); }
+.ribbon-warning { border-left-color: var(--warn); }
+.ribbon-danger { border-left-color: var(--danger); }
+.ribbon-info { border-left-color: var(--info); }
+.ribbon-danger .ribbon-value { color: var(--danger); }
+.ribbon-warning .ribbon-value { color: color-mix(in oklch, var(--warn), var(--fg) 32%); }
+.ribbon-success .ribbon-value { color: color-mix(in oklch, var(--success), var(--fg) 20%); }
+
+/* Level-triggered attention callout — only rendered when something is actually
+   wrong (pipeline error/dead-letter, or a real high/critical alert). */
+.attention {
+  align-items: center;
+  background: color-mix(in oklch, var(--danger), var(--surface) 86%);
+  border: 1px solid color-mix(in oklch, var(--danger), var(--surface) 52%);
+  border-radius: 8px;
+  color: color-mix(in oklch, var(--danger), var(--fg) 20%);
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  text-align: left;
+  width: 100%;
+}
+
+.attention:hover {
+  border-color: var(--danger);
+}
+
+.attention-text {
+  flex: 1;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.attention-cta {
+  color: var(--danger);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+/* Severity accents so danger surfaces while scanning. box-shadow inset works on
+   a <td> regardless of border-collapse; the finding card uses a real border. */
+tr[data-severity='critical'] td:first-child {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+
+tr[data-severity='high'] td:first-child {
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+
+.finding-card[data-severity='critical'] {
+  border-left: 3px solid var(--danger);
+}
+
+.finding-card[data-severity='high'] {
+  border-left: 3px solid var(--warn);
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.grid-panel {
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(3, 1fr);
+  overflow: hidden;
+}
+
+.service-tile {
+  background: var(--surface);
+  min-width: 0;
+  padding: 18px;
+}
+
+.service-tile + .service-tile {
+  border-left: 1px solid var(--border);
+}
+
+.service-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+}
+
+.service-tile p,
+.finding-card p {
+  color: var(--muted);
+  margin: 12px 0 0;
+  max-width: 70ch;
+  overflow-wrap: anywhere;
+}
+
+.tile-foot {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 13px;
+  gap: 7px;
+  margin-top: 18px;
+}
+
+.split-panel {
+  display: grid;
+  gap: 1px;
+  grid-template-columns: 1fr 1fr;
+  overflow: hidden;
+}
+
+.split-panel > div {
+  padding: 18px;
+}
+
+.split-panel > div + div {
+  border-left: 1px solid var(--border);
+}
+
+.section-heading {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.kv-grid {
+  display: grid;
+  gap: 8px 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.kv-grid div {
+  border-top: 1px solid var(--border);
+  min-width: 0;
+  padding-top: 8px;
+}
+
+.kv-grid dt {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.kv-grid dd {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.table-panel {
+  overflow: hidden;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  border-collapse: collapse;
+  font-size: 14px;
+  min-width: 980px;
+  width: 100%;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--border);
+  padding: 11px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+td {
+  overflow-wrap: anywhere;
+}
+
+tr:last-child td {
+  border-bottom: 0;
+}
+
+.finding-list {
+  display: grid;
+  gap: 12px;
+}
+
+.finding-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  padding: 18px;
+}
+
+.finding-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.finding-side {
+  border-left: 1px solid var(--border);
+  display: grid;
+  gap: 6px;
+  padding-left: 18px;
+}
+
+.finding-side strong {
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  min-height: 24px;
+  padding: 0 8px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* Badges mix against the theme surface/foreground (not literal white/black) so
+   the same rules produce a soft tint on light AND on dark backgrounds. */
+.badge-success {
+  background: color-mix(in oklch, var(--success), var(--surface) 86%);
+  border-color: color-mix(in oklch, var(--success), var(--surface) 60%);
+  color: color-mix(in oklch, var(--success), var(--fg) 28%);
+}
+
+.badge-warning {
+  background: color-mix(in oklch, var(--warn), var(--surface) 84%);
+  border-color: color-mix(in oklch, var(--warn), var(--surface) 55%);
+  color: color-mix(in oklch, var(--warn), var(--fg) 40%);
+}
+
+.badge-danger {
+  background: color-mix(in oklch, var(--danger), var(--surface) 86%);
+  border-color: color-mix(in oklch, var(--danger), var(--surface) 58%);
+  color: color-mix(in oklch, var(--danger), var(--fg) 22%);
+}
+
+.badge-info {
+  background: color-mix(in oklch, var(--info), var(--surface) 86%);
+  border-color: color-mix(in oklch, var(--info), var(--surface) 58%);
+  color: color-mix(in oklch, var(--info), var(--fg) 28%);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.compact {
+  display: inline-block;
+  max-width: 34ch;
+  overflow-wrap: anywhere;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.empty-state {
+  align-items: flex-start;
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 28px;
+}
+
+.empty-state strong {
+  color: var(--fg);
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 900px) {
+  .app-shell {
+    width: min(100% - 24px, 760px);
+    padding-top: 18px;
+  }
+
+  .app-header,
+  .split-panel,
+  .finding-card {
+    grid-template-columns: 1fr;
+  }
+
+  .app-header {
+    display: grid;
+  }
+
+  .header-meta {
+    justify-content: flex-start;
+  }
+
+  .toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .status-ribbon,
+  .event-summary,
+  .grid-panel {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .service-tile + .service-tile,
+  .split-panel > div + div,
+  .event-summary > div + div {
+    border-left: 0;
+  }
+
+  .service-tile:nth-child(2n),
+  .event-summary > div:nth-child(2n) {
+    border-left: 1px solid var(--border);
+  }
+
+  .service-tile:nth-child(n + 3),
+  .split-panel > div + div,
+  .event-summary > div:nth-child(n + 3) {
+    border-top: 1px solid var(--border);
+  }
+
+  .finding-side {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    padding-left: 0;
+    padding-top: 14px;
+  }
+}
+
+@media (max-width: 640px) {
+  h1 {
+    font-size: 24px;
+  }
+
+  .status-ribbon,
+  .event-summary,
+  .grid-panel,
+  .kv-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .attention {
+    flex-wrap: wrap;
+  }
+
+  .service-tile:nth-child(2n),
+  .event-summary > div:nth-child(2n) {
+    border-left: 0;
+  }
+
+  .service-tile + .service-tile,
+  .event-summary > div + div {
+    border-top: 1px solid var(--border);
+  }
+
+  .tab {
+    padding: 0 10px;
+  }
+
+  table,
+  thead,
+  tbody,
+  th,
+  td,
+  tr {
+    display: block;
+  }
+
+  table {
+    min-width: 0;
+  }
+
+  thead {
+    display: none;
+  }
+
+  tr {
+    border-bottom: 1px solid var(--border);
+    padding: 10px 12px;
+  }
+
+  tr:last-child {
+    border-bottom: 0;
+  }
+
+  td {
+    align-items: flex-start;
+    border-bottom: 0;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: 112px minmax(0, 1fr);
+    padding: 6px 0;
+  }
+
+  td::before {
+    color: var(--muted);
+    content: attr(data-label);
+    font-size: 12px;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+}

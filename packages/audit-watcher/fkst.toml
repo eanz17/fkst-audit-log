@@ -1,0 +1,6 @@
+kind = "package"
+name = "audit-watcher"
+persistence_class = "stateless_adapter"
+
+[code]
+root = "."

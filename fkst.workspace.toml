@@ -1,0 +1,21 @@
+[workspace]
+units = ["packages/*"]
+packages = ["packages/*"]
+
+[registries]
+workspace = "workspace"
+
+[[package]]
+name = "audit-watcher"
+source = "workspace"
+version = "workspace"
+
+[[package]]
+name = "audit-analyzer"
+source = "workspace"
+version = "workspace"
+
+[[package]]
+name = "alert-proxy"
+source = "workspace"
+version = "workspace"

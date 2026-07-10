@@ -1,0 +1,6 @@
+kind = "package"
+name = "alert-proxy"
+persistence_class = "stateless_adapter"
+
+[code]
+root = "."
