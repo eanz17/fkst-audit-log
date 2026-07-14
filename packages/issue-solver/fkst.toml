@@ -1,0 +1,9 @@
+kind = "package.composed"
+name = "issue-solver"
+persistence_class = "judgment_pipeline"
+
+[code]
+root = "."
+
+[event_deps]
+packages = ["issue-watcher", "issue-proxy", "alert-proxy"]

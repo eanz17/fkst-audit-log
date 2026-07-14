@@ -54,27 +54,58 @@ return {
     t.is_true(decoded.text:find('quote " and', 1, true) ~= nil)
   end,
 
-  test_render_lark_message_body_contains_all_alert_fields = function()
-    local body = core.render_lark_message_body(valid_alert({
+  test_render_lark_message_body_is_human_first = function()
+    local alert = valid_alert({
       summary = 'quote " and \n newline',
       extra = "also shown",
-    }), "oc_chat")
+    })
+    local body = core.render_lark_message_body(alert, "oc_chat")
     local decoded = json.decode(body)
     t.eq(decoded.receive_id, "oc_chat")
     t.eq(decoded.msg_type, "interactive")
 
     local card = json.decode(decoded.content)
     t.eq(card.schema, "2.0")
-    t.is_true(card.header.title.content:find("HIGH", 1, true) ~= nil)
+    t.is_true(card.header.title.content:find("高危", 1, true) ~= nil)
+    t.is_true(card.header.title.content:find("auth-bruteforce", 1, true) ~= nil)
+    t.eq(card.header.template, "orange")
     local rendered = {}
     for _, element in ipairs(card.body.elements) do
       table.insert(rendered, tostring(element.content or ""))
     end
     local card_text = table.concat(rendered, "\n")
-    t.is_true(card_text:find("summary", 1, true) ~= nil)
+    t.is_true(card_text:find("发生了什么", 1, true) ~= nil)
     t.is_true(card_text:find('quote " and', 1, true) ~= nil)
-    t.is_true(card_text:find("dedup_key", 1, true) ~= nil)
+    t.is_true(card_text:find("建议处理", 1, true) ~= nil)
+    t.is_true(card_text:find(alert.action, 1, true) ~= nil)
+    t.is_true(card_text:find(alert.evidence, 1, true) ~= nil)
+    -- Unknown fields still surface; footer keeps traceability internals.
     t.is_true(card_text:find("extra", 1, true) ~= nil)
+    t.is_true(card_text:find(alert.dedup_key, 1, true) ~= nil)
+    t.is_true(card_text:find(alert.source_path, 1, true) ~= nil)
+    -- Protocol noise stays out of the card body.
+    t.is_true(card_text:find("alert-proxy.alert.v1", 1, true) == nil)
+  end,
+
+  test_lark_header_color_tracks_severity = function()
+    local expected = {
+      critical = "red",
+      high = "orange",
+      medium = "yellow",
+      low = "grey",
+    }
+    for severity, template in pairs(expected) do
+      local card = json.decode(core.render_lark_card_content(valid_alert({
+        severity = severity,
+      })))
+      t.eq(card.header.template, template)
+    end
+  end,
+
+  test_severity_label_maps_known_and_falls_back = function()
+    t.eq(core.severity_label("critical"), "严重")
+    t.eq(core.severity_label("HIGH"), "高危")
+    t.eq(core.severity_label("weird"), "WEIRD")
   end,
 
   test_status_gate = function()

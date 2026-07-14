@@ -1,0 +1,9 @@
+kind = "package.composed"
+name = "issue-proxy"
+persistence_class = "stateless_adapter"
+
+[code]
+root = "."
+
+[event_deps]
+packages = ["alert-proxy", "issue-solver"]

@@ -28,7 +28,11 @@ fi
 
 PACKAGE_ROOTS="--package-root $ROOT/packages/audit-watcher \
   --package-root $ROOT/packages/audit-analyzer \
-  --package-root $ROOT/packages/alert-proxy"
+  --package-root $ROOT/packages/alert-proxy \
+  --package-root $ROOT/packages/stability-sentinel \
+  --package-root $ROOT/packages/issue-proxy \
+  --package-root $ROOT/packages/issue-watcher \
+  --package-root $ROOT/packages/issue-solver"
 
 cmd=${1:-help}
 
@@ -45,6 +49,7 @@ case "$cmd" in
     export FKST_DURABLE_ROOT="$scratch/durable"
     mkdir -p "$FKST_RUNTIME_ROOT" "$FKST_DURABLE_ROOT"
     unset FKST_ALERT_WRITE ALERT_WEBHOOK_URL ALERT_WEBHOOK_URL_CRITICAL ALERT_FALLBACK_WEBHOOK_URL || true
+    unset FKST_ISSUE_WRITE FKST_ISSUE_REPO FKST_ISSUE_TRANSPORT FKST_ISSUE_AUTOCLOSE STABILITY_DETECT_ENABLED || true
     echo "== conformance =="
     # shellcheck disable=SC2086
     "$BIN" conformance --project-root "$ROOT" $PACKAGE_ROOTS
@@ -82,6 +87,11 @@ case "$cmd" in
       echo "alert mode:   REAL (FKST_ALERT_WRITE=1, mode=${ALERT_DELIVERY_MODE:-lark})"
     else
       echo "alert mode:   dry-run (set FKST_ALERT_WRITE=1 in .fkst/env for real alerts, mode=${ALERT_DELIVERY_MODE:-lark})"
+    fi
+    if [ "${FKST_ISSUE_WRITE:-}" = "1" ]; then
+      echo "issue mode:   REAL (FKST_ISSUE_WRITE=1, repo=${FKST_ISSUE_REPO:-eanz17/fkst-audit-log}, transport=${FKST_ISSUE_TRANSPORT:-gh}, autoclose=${FKST_ISSUE_AUTOCLOSE:-1})"
+    else
+      echo "issue mode:   dry-run (set FKST_ISSUE_WRITE=1 in .fkst/env for real GitHub issues, repo=${FKST_ISSUE_REPO:-eanz17/fkst-audit-log})"
     fi
     # shellcheck disable=SC2086
     exec "$BIN" supervise --project-root "$ROOT" --framework-bin "$BIN" $PACKAGE_ROOTS

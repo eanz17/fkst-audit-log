@@ -32,6 +32,7 @@ return {
     t.is_true(prompt:find("at most 5", 1, true) ~= nil)
     t.is_true(prompt:find("outcome=Success", 1, true) ~= nil)
     t.is_true(prompt:find("not anomalous by itself", 1, true) ~= nil)
+    t.is_true(prompt:find("简体中文", 1, true) ~= nil)
   end,
 
   test_parse_accepts_valid_findings = function()

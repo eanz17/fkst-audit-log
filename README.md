@@ -8,17 +8,17 @@
 
 ## 摘要(一页纸结论)
 
-我们用 **fkst** 搭了一条完整的审计日志安全监控管线:**监听审计日志 → LLM 语义分析 → 反幻觉核验 → 有界去重告警**。
+我们用 **fkst** 搭了一条完整的审计日志安全监控管线:**监听审计日志 → LLM 语义分析 → 反幻觉核验 → 有界去重告警**,并在其上叠加了第二条自动化闭环:**规则化不稳定检测 → 自动提 GitHub Issue → 复发评论 → 恢复自动关单**(见「稳定性检测与自动提 Issue」一节)。
 
 三个核心问题的答案:
 
-1. **如何融合 fkst**:把管线四环节映射成 3 个 fkst 包([audit-watcher](packages/audit-watcher/) / [audit-analyzer](packages/audit-analyzer/) / [alert-proxy](packages/alert-proxy/)),完整复用引擎的**可靠投递、崩溃即重启、并发限流的 LLM 子进程、死信队列、conformance 门禁、dry-run 姿态**,并逐条照抄 fkst 官方包(`archaudit`、`github-proxy`)验证过的设计模式。我们没有绕过引擎的任何安全边界,而是站在它的能力面上。
+1. **如何融合 fkst**:把管线四环节映射成 5 个 fkst 包([audit-watcher](packages/audit-watcher/) / [audit-analyzer](packages/audit-analyzer/) / [alert-proxy](packages/alert-proxy/) / [stability-sentinel](packages/stability-sentinel/) / [issue-proxy](packages/issue-proxy/)),完整复用引擎的**可靠投递、崩溃即重启、并发限流的 LLM 子进程、死信队列、conformance 门禁、dry-run 姿态**,并逐条照抄 fkst 官方包(`archaudit`、`github-proxy`)验证过的设计模式。我们没有绕过引擎的任何安全边界,而是站在它的能力面上。
 2. **如何借鉴开源安全项目**:先做了 **43 个开源项目的联网调研**,得出"通行做法是分层降噪、结构化输出、送云前脱敏、告警去重"的共识,然后把这些共识**落到 fkst 的工程骨架上**——用严格 JSON schema + fail-closed 解析(对标 LogSentinelAI 的 Pydantic Schema)、本地日志关键词与 Aevatar outcome/action 双轨初筛(对标 Wazuh 规则 / Drain3 聚类)、反幻觉证据核验、内容派生去重。fkst 提供的正是这些项目普遍薄弱的部分:可靠投递、幂等、DLQ、dry-run。
 3. **能达到什么目标**:一套**崩溃可恢复、幂等去重、上线前可空跑验证**的安全监控**工程骨架**。降噪与误报控制的**机制**(双轨初筛、反幻觉核验、severity 阈值、内容派生去重)已实现并单测覆盖;但**检出率与误报率尚未实测**——因为产生安全判断的 LLM 环节还没在真实模型上跑过真实日志。
 
 **当前状态(务必分清两件事):**
 
-- **工程底盘:已建成并验证** —— 3 个包 + **93 个 Lua 测试全绿**(本机 `scripts/run.sh test` 实跑输出 `93 passed, 0 failed`)+ 4 个 Web 风险分类测试 + conformance 通过 + 告警投递/去重路径单测覆盖并对本地端手动冒烟;配套只读 Web 监控界面与一键启动脚本。
+- **工程底盘:已建成并验证** —— 5 个包 + **212 个 Lua 测试全绿**(本机 `scripts/run.sh test` 实跑输出 `212 passed, 0 failed`)+ 21 个 Web 测试(风险分类 + issue 日志解析)+ conformance 通过 + 告警投递/去重路径单测覆盖并对本地端手动冒烟;配套只读 Web 监控界面与一键启动脚本。
 - **检出价值:已设计、待验证** —— 本机未装 `codex` CLI,**LLM 分析这一最关键环节目前以 mock 覆盖,尚未在真机端到端跑通**。接入 host 的 codex 或本地模型(Ollama/vLLM)后,需用历史日志实测检出率与误报率,才能对"抓得准不准"下结论。这不是一个边角缺口,而是决定工具价值的核心环节——本文后续所有"成效"都据此区分"机制就绪"与"效果已证"。
 
 ---
@@ -97,9 +97,18 @@ Return [] when nothing is anomalous.
 1. **analyzer 侧过滤**:finding 先过反幻觉核验(`evidence_line` 必须逐字出现在原批次,否则丢弃,[analyze/main.lua:80-82](packages/audit-analyzer/departments/analyze/main.lua)),再过 severity 阈值(`AUDIT_ALERT_MIN_SEVERITY`,默认 `high`),达标才 raise `alert-proxy.alert_request`,携带 `dedup_key = 类别 + 证据行 checksum + 24h 天桶`([core.lua:50-58](packages/audit-analyzer/core.lua))。
 2. **去重**:`alert-proxy.send` 在 `with_lock` 串行区内查 `alert-proxy/sent/{dedup_key}` marker,24h 抑制窗口内命中即 SKIP,防告警风暴([send/main.lua:102-107](packages/alert-proxy/departments/send/main.lua))。
 3. **门控**:`FKST_ALERT_WRITE` 不为 `1` 时 dry-run——只打 `OUTBOUND mode=dry-run` 日志、不外发、**不写 sent marker**(之后开开关仍会补发);为 `1` 才真发([send/main.lua:112-117](packages/alert-proxy/departments/send/main.lua))。
-4. **通道**:默认 **lark 模式**——`nyxid proxy request` 调飞书 `open-apis/im/v1/messages` 发交互式卡片(service 默认 `api-lark-bot-7`,目标群由 `ALERT_LARK_CHAT_ID` 指定;critical 红头、high/medium 橙头,[send/main.lua:60-93](packages/alert-proxy/departments/send/main.lua)、[core.lua:111-120](packages/alert-proxy/core.lua));**webhook 模式**——host `curl` POST Slack 兼容 `{"text": …}` 到 `ALERT_WEBHOOK_URL`,critical 优先走 `ALERT_WEBHOOK_URL_CRITICAL` 独立通道([send/main.lua:30-58](packages/alert-proxy/departments/send/main.lua))。
+4. **通道**:默认 **lark 模式**——`nyxid proxy request` 调飞书 `open-apis/im/v1/messages` 发交互式卡片(service 默认 `api-lark-bot-7`,目标群由 `ALERT_LARK_CHAT_ID` 指定)。卡片为中文人话版:标题 `🚨 审计告警 · 高危 · <category>`,正文按"发生了什么 / 建议处理 / 证据日志(代码块)"分块,source_path/batch_id/dedup_key 收进灰色脚注,schema 字段不展示;头色按级别区分 critical 红、high 橙、medium 黄、low 灰([send/main.lua:60-93](packages/alert-proxy/departments/send/main.lua)、[core.lua](packages/alert-proxy/core.lua) `render_lark_card_content`);LLM 产出的 summary/action 由 analyzer 提示词约束为简体中文([audit-analyzer/core.lua](packages/audit-analyzer/core.lua) `build_prompt`);**webhook 模式**——host `curl` POST Slack 兼容 `{"text": …}` 到 `ALERT_WEBHOOK_URL`,critical 优先走 `ALERT_WEBHOOK_URL_CRITICAL` 独立通道([send/main.lua:30-58](packages/alert-proxy/departments/send/main.lua))。
 
 发送失败抛 `error()`,引擎做 5 次指数退避重投([send/main.lua:12](packages/alert-proxy/departments/send/main.lua)),耗尽进 `dead_letter`,死信部门用独立的 `ALERT_FALLBACK_WEBHOOK_URL` 备用通道发紧急元告警。analyzer 自身持续失败(如缺 codex)的死信也会升级为一条 `pipeline-dead-letter` 元告警(见 §4.5)。
+
+### Q6:怎么发现"系统不稳定"并自动提 issue?
+
+告警管线之外的第二条闭环,纯规则、无 LLM 决策(详见「稳定性检测与自动提 Issue」一节):
+
+1. **检测**:`stability-sentinel.detect` 每 5 分钟从 `aevatar-events.jsonl` 全量快照(含成功记录,有分母可算错误率)+ 引擎死信日志重算 4 类信号——持续失败 / 错误率飙升 / 状态震荡(flapping) / 管线死信复发,按 30 分钟桶做窗口数学,快照没覆盖到的桶一律算"数据不足"而非"安静"。
+2. **滞回**:信号首次命中只进 candidate,连续两个 tick 才 open(一次抖动永不提单);恢复要求最新桶零失败且连续 6 个安静桶(3h)才 close——开严关更严,悬在阈值边缘不会让 issue 反复开关。
+3. **提单**:`issue-proxy.file` 收到 open/comment/close 事件后:先过 fail-closed 校验和**通用脱敏**(敏感 key=value、Bearer、URL 凭据、长 hex、JWT,身份类字段截断到前 8 位),再查 GitHub 本身(`gh issue list` 搜标题里的 `fp:<指纹>`)——GitHub 是唯一能扛住缓存清空/重启的去重索引;带 `fkst-mute`/`wontfix` 标签关闭的 issue 永久压制该指纹。
+4. **姿态**:`FKST_ISSUE_WRITE=1` 才真写(默认 dry-run,只打 `ISSUE_OUTBOUND mode=dry-run` 日志、不写去重标记,翻开关后自动补单);dry-run 期间每天跑一次只读 `gh auth status` 探针,烧机期就能证明认证可用。真写有硬预算:每天最多 5 单、同时最多 10 单开放,超额发 `issue-budget-exhausted` 元告警而非静默。复发变成同一 issue 上的冷却评论(≥6h),恢复后自动关单(`FKST_ISSUE_AUTOCLOSE=1` 默认开)。
 
 ---
 
@@ -139,6 +148,13 @@ watch/*.log 变化(file_watch raiser,5s 内感知;另有 10m cron 兜底扫描)
                               默认 dry-run;FKST_ALERT_WRITE=1 才真发
 死信:每包 dead_letter 部门;analyzer 的死信升级为管线元告警;
       alert-proxy 的死信走独立 fallback webhook。
+
+第二条闭环(稳定性 → GitHub Issue):
+aevatar-events.jsonl 快照 + framework-child 死信日志(5m cron)
+  → stability-sentinel.detect  30m 桶窗口数学、4 信号、滞回状态机(candidate→open→recovering→closed)
+  →   issue-proxy.issue_request 事件(kind=open|comment|close)
+  → issue-proxy.file           校验 → 通用脱敏 → GitHub 指纹探针去重 → mute 标签压制 → 预算闸
+                              默认 dry-run;FKST_ISSUE_WRITE=1 才真写 gh issue create/comment/close
 ```
 
 | 包 | 类型 | persistence_class |
@@ -146,6 +162,8 @@ watch/*.log 变化(file_watch raiser,5s 内感知;另有 10m cron 兜底扫描)
 | `packages/audit-watcher` | flat | stateless_adapter |
 | `packages/audit-analyzer` | composed(event_deps: audit-watcher, alert-proxy) | judgment_pipeline |
 | `packages/alert-proxy` | flat | stateless_adapter |
+| `packages/stability-sentinel` | composed(event_deps: issue-proxy) | judgment_pipeline |
+| `packages/issue-proxy` | composed(event_deps: alert-proxy) | stateless_adapter |
 
 全景图与时序图见 §4.1、§4.8.4。
 
@@ -436,13 +454,13 @@ flowchart LR
 
 ### 4.6 只读 Web 监控界面
 
-`web/`(Vite + React + Express adapter)是一个**只读**监控网站:旁路 scrape `.fkst/run` runtime 日志、`watch/*.log`、进程 env,把管线状态渲染成五个视图(管线状态 / 审计事件 / 批次·发现 / 告警 / 配置)。它**不写任何东西、不碰引擎**,敏感项脱敏,示例数据仅在显式开启且数据集为空时注入并打 `sample` 标记。`./boot.sh` 一条命令同时起 引擎 + adapter(:5174) + UI(:5173)。使用细节见下文「Web 界面」一节。
+`web/`(Vite + React + Express adapter)是一个**只读**监控网站:旁路 scrape `.fkst/run` runtime 日志、`watch/*.log`、进程 env,把管线状态渲染成六个视图(管线状态 / 审计事件 / 批次·发现 / 告警 / 配置 / 稳定性)。它**不写任何东西、不碰引擎**,敏感项脱敏,示例数据仅在显式开启且数据集为空时注入并打 `sample` 标记。`./boot.sh` 一条命令同时起 引擎 + adapter(:5174) + UI(:5173)。使用细节见下文「Web 界面」一节。
 
 ### 4.7 测试与验证现状
 
-- **93 个 Lua 测试全绿**:本机 `scripts/run.sh test` 实跑输出 `93 passed, 0 failed`;覆盖增量读取 / 文件轮转 / 双轨初筛 / fail-closed 解析 / 反幻觉核验 / dedup / dry-run 门控 / Aevatar 分页去重(fixtures 见 [tests/fixtures](packages/audit-watcher/tests/fixtures/))。
-- **4 个 Web 风险分类测试全绿 + production build 通过**:覆盖正常 outcome、失败事实、高影响成功变更和 attempt 去重语义。
-- **conformance 通过**:不可覆盖 gate 全绿。
+- **212 个 Lua 测试全绿**:本机 `scripts/run.sh test` 实跑输出 `212 passed, 0 failed`;覆盖增量读取 / 文件轮转 / 双轨初筛 / fail-closed 解析 / 反幻觉核验 / dedup / dry-run 门控 / Aevatar 分页去重(fixtures 见 [tests/fixtures](packages/audit-watcher/tests/fixtures/)),以及稳定性侧的桶数学 / 四信号边界 / 状态机全表 / 脱敏逐规则 / GitHub 探针与预算闸 / mute 压制。
+- **21 个 Web 测试全绿 + production build 通过**:风险分类(正常 outcome、失败事实、高影响成功变更、attempt 去重)+ ISSUE_*/INCIDENT 日志行解析与折叠。
+- **conformance 通过**:不可覆盖 gate 全绿(5 包、10 departments、4 raisers、12 queues 图扫描)。
 - **告警投递/去重:单测覆盖 + 手动冒烟**:`send_test.lua` 覆盖 dry-run 门控与 dedup 抑制;真发路径(`FKST_ALERT_WRITE=1`)已对本地 HTTP 端手动冒烟(见项目记录,无自动化回归 artifact)。
 - **核心缺口(不是边角)**:本机无 `codex` CLI,**产生安全判断的 LLM 环节以 mock 覆盖,从未真机端到端跑通**;接入真实 codex 或本地模型后才能测检出率/误报率。
 
@@ -575,6 +593,10 @@ sequenceDiagram
 - **依赖 host 的 codex / nyxid**:LLM 环节需 host 上 `codex` 可用且已登录(或改接本地模型);Aevatar / 飞书投递依赖当前登录的 NyxID 账号。
 - **规则初筛仍较粗**:本地 16 条 pattern 可能漏掉"语义可疑但无关键词"的行;Aevatar 查询 DTO 又未暴露 sensitivity/destructive,只能依赖稳定 action 命名——路线图用服务端风险字段、Drain3 聚类或前置规则引擎补强。
 - **本机未端到端跑 LLM**:本机无 codex,该环节靠 mock;结论质量需接真实模型后用历史日志调优。
+- **稳定性阈值未经真实流量校准**:四条信号的默认阈值(5 次失败 / 3-of-8 桶 / 3× 飙升系数等)是设计值;dry-run 演练列表(Web 稳定性 tab)就是为校准准备的数据回路,烧机后再翻 `FKST_ISSUE_WRITE=1`。
+- **脱敏是规则式尽力而为**:通用规则 + env 扩展模式覆盖常见密钥形态,但目标仓库是公开的——不能保证语义级除敏;高敏部署应改投私有 repo(`FKST_ISSUE_REPO` 一行配置)或走 `FKST_REDACT_EXTRA_PATTERNS` 补部署特定模式(写在不入库的 `.fkst/env`)。
+- **快照容量影响检测窗口**:`aevatar-events.jsonl` 上限 `AEVATAR_AUDIT_MAX_RECORDS`(默认 1000,实测只覆盖约 2-3 小时),繁忙主机应调大,否则 4h 回看窗口会被数据截短(截短只会延迟检测,不会误报)。
+- **同指纹去重跨代有一个窄窗**:提单锁按 `dedup_key`(含 open_bucket)加,跨代 open 靠 GitHub 搜索探针兜底。GitHub Search 是最终一致的,所以极端时序下——真写并发度 >1、或 gh 中断后死信重投恰好撞上新一代 open、或缓存被清后 ~10 分钟内重开——同一指纹理论上可能开出两个 issue;真写默认关闭、每日/同时开放硬预算封顶了影响面。高一致性部署可把并发度设为 1,或在探针里加一次按编号的 `GET issues/<n>` 直读。
 
 ### 5.4 路线图
 
@@ -590,10 +612,12 @@ sequenceDiagram
 
 | 指标 | 现状 | 说明 |
 |---|---|---|
-| Lua 测试 | **93 passed / 0 failed(实测)** | `scripts/run.sh test` 输出 |
-| Web 风险分类 | **4 passed / 0 failed(实测)** | `npm test` 输出 |
-| conformance | **通过(实测)** | 不可覆盖 gate |
+| Lua 测试 | **212 passed / 0 failed(实测)** | `scripts/run.sh test` 输出 |
+| Web 测试 | **21 passed / 0 failed(实测)** | `npm test` 输出 |
+| conformance | **通过(实测)** | 不可覆盖 gate,5 包图扫描 |
 | 告警投递 / 去重 | 单测 + 手动冒烟 | 无自动化回归 artifact |
+| 稳定性检测阈值 | **未校准** | 设计值;dry-run 演练列表是校准回路 |
+| Issue 真写路径 | 单测(mock gh)+ 冒烟见下 | GitHub 探针/预算/mute 逻辑全部单测覆盖 |
 | 初筛降噪率 | **未测** | 取决于真实日志分布 |
 | LLM 检出率 / 召回 | **未测** | 需真实模型跑含已知攻击样本的真实日志 |
 | 误报率(FP) | **未测** | 反幻觉核验能压"幻觉",压不了"真误判" |
@@ -640,7 +664,7 @@ sequenceDiagram
 - 只起网页(不带引擎,读现有日志):`cd web && ./serve.sh`。引擎没跑时页面顶部会提示"尚未读取到 runtime 数据"。
 - 只跑引擎不要网页:`FKST_WEB=0 ./boot.sh`。
 - 页面每 30s 自动刷新,也可点右上角按钮手动刷新。
-- 五个视图:**管线状态**(三服务健康 + Aevatar 轮询摘要 + 运行边界)、**审计事件**(本地文件事件 + Aevatar audit trail,可疑项高亮)、**批次/发现**(analyzer 结果;analyzer 持续失败时会出现一条 `pipeline_health` 发现)、**告警**(按 `dedup_key` 折叠,dry-run/real 标注)、**配置**(脱敏后的关键环境变量)。
+- 六个视图:**管线状态**(三服务健康 + Aevatar 轮询摘要 + 运行边界)、**审计事件**(本地文件事件 + Aevatar audit trail,可疑项高亮)、**批次/发现**(analyzer 结果;analyzer 持续失败时会出现一条 `pipeline_health` 发现)、**告警**(按 `dedup_key` 折叠,dry-run/real 标注)、**稳定性**(不稳定事件卡片 + 提单/演练活动 + 提单姿态条,`issue-filing-dead-letter`/`issue-budget-exhausted` 元告警不混入审计发现)、**配置**(脱敏后的关键环境变量)。
 - 端口可改:`FKST_WEB_PORT`(UI)、`FKST_WEB_API_PORT`(adapter)。仅本机监听 `127.0.0.1`。
 
 `open-design/` 只放界面设计稿:直接打开 `open-design/preview.html` 就能看界面样式(无需启动任何服务)。
@@ -712,6 +736,37 @@ scripts/run.sh run audit-watcher collect \
 - `*.attempted` 只表示开始尝试,不因 action 本身被标为高影响;配对的 terminal record 会按最终 outcome 分类,避免同一成功请求重复分析。
 
 `/api/audit/trail` 当前没有返回 `sensitivityLevel` / `isDestructive`,所以成功变更只能依赖稳定 action 名做保守筛选。风险规则带版本号;本次升级后会自动重扫最近 lookback 窗口一次,随后继续使用 cursor/watermark 和 audit id 去重。
+
+## 稳定性检测与自动提 Issue
+
+告警回答"**刚刚发生了什么可疑事件**";这条闭环回答"**哪里在持续不稳定**",并把答案变成 GitHub Issue 的完整生命周期。两个新包,设计经三方案竞标 + 三维评审后综合(架构契合/运营安全/成本可测),核心取舍:检测**不消费**事件流而是每 tick 从快照重算(天然免疫 at-least-once 重放,且有分母),GitHub 本身充当持久去重索引(缓存是可清空的 scratch,GitHub 不是)。
+
+### 检测:stability-sentinel
+
+数据源(只读,不重复拉取):`$FKST_RUNTIME_ROOT/aevatar-events.jsonl`(watcher 维护的全量快照,含成功记录)+ `logs/framework-child/*.log` 里的 `tag=DEAD_LETTER` 结构化行。每 5 分钟 cron 触发([raisers/stability_scan.lua](packages/stability-sentinel/raisers/stability_scan.lua)),`STABILITY_DETECT_ENABLED=1` 才干活。
+
+按 30 分钟桶聚合,指纹 = `stability-v1|信号|action族|scope|resourceType`(action 去掉 `.failed/.rejected/...` 后缀归族,排除 resourceId 控基数;实测 1000 条真实记录 → 92 个指纹)。四条纯规则([core.lua](packages/stability-sentinel/core.lua),阈值全部 env 可调):
+
+| 信号 | 触发条件(默认) | severity |
+|---|---|---|
+| `recurring-failure` 持续失败 | 近 8 桶中 ≥3 桶有失败,且总失败 ≥5 | high |
+| `error-spike` 错误率飙升 | 当前桶样本 ≥10、失败 ≥5,失败率 ≥ max(3×前桶均值, 均值+0.25) | high |
+| `flapping` 状态震荡 | 4 桶内成功↔失败切换 ≥6 次,两态各 ≥3 | medium |
+| `pipeline-dead-letter` 管线死信复发 | 60 分钟内同 (QUEUE, ERROR_CLASS) 死信 ≥3 条 | high |
+
+**滞回状态机**(candidate→open→recovering→closed,cache 持久、14d TTL):首次命中只进 candidate,**连续两个 tick** 命中才 open 并 raise `issue-proxy.issue_request`;open→recovering 要求最新覆盖桶零失败;recovering 里连续 `STABILITY_QUIET_WINDOWS=6` 个安静**覆盖**桶(3h)才 close——**快照没覆盖到的桶算"数据不足",永远不算安静**,所以缓存被清只会延迟检测,绝不会误判恢复;同理死信日志读取降级(日志轮转/目录缺失/不可读/grep 超时,与"grep 无匹配"严格区分)时**冻结**死信事件、不自动关单,读不到 ≠ 恢复了。恢复期复发 → 回到 open 并发一条复发评论(dedup_key 带 ≥6h 冷却桶)。closed 后再犯 = 新事件(新 incident_id),正文链接旧单。
+
+### 提单:issue-proxy
+
+通用的 GitHub Issue 出站代理——任何包 raise 一条合法的 `issue-proxy.issue.v1` 事件都能用,与稳定性语义解耦。管道([departments/file/main.lua](packages/issue-proxy/departments/file/main.lua)):fail-closed 校验 → 逐字段脱敏 → 五层防刷屏 → 出站。
+
+**通用脱敏**([core.lua](packages/issue-proxy/core.lua) `redact`,目标仓库是公开的,这层是承重墙):敏感 key=value 掩蔽(token/secret/password/authorization/webhook 等 + `FKST_REDACT_EXTRA_KEYS`)、`Bearer ***`、URL userinfo 与敏感 query 参数、≥32 位裸 hex 截断、JWT 整体掩蔽、身份类字段(actor/identityKey/correlation/scope)只留前 8 位;部署特定模式经 `FKST_REDACT_EXTRA_PATTERNS` 的安全 Lua-pattern 子集注入(必须有字面前缀且最多一个 `+`,高复杂度模式直接拒绝,配置写在**不入库**的 `.fkst/env` 里)。规则幂等,每条有独立单测。
+
+**五层防刷屏**(由廉到贵):① 事件级 dedup_key(open 按事件生命周期唯一);② 成功后才写的 done-marker(30d,dry-run/失败绝不写);③ **GitHub 即真相**——create 前 `gh issue list --search "fp:<hex> in:title"`,已有开单则收编其编号、跳过新建;探针同时带回标签,**打开或关闭**的单只要挂了 mute 标签(`fkst-mute,wontfix`)就**永久压制**该指纹——评论、自动关单、收编全部让位,人手动 mute 活着的单(哪怕重开后再 mute)机器都不会再碰,人的处置永远赢过机器;④ 硬预算 `FKST_ISSUE_MAX_PER_DAY=5` / `FKST_ISSUE_MAX_OPEN=10`,超额 ack(不重试)并 raise `issue-budget-exhausted` 元告警;⑤ 上游滞回保证每个真实事件 O(1) 个动作。
+
+**出站与姿态**:默认 `gh` CLI 走 `exec_argv`(无 shell、不插值;正文 `--body-file`);`FKST_ISSUE_TRANSPORT=nyxid` 切到 NyxID 代理供无头部署。`FKST_ISSUE_WRITE=1` 才真写——默认 dry-run 打 `ISSUE_OUTBOUND mode=dry-run` 日志且不写 marker(翻开关自动补单);dry-run 每天一次只读 `gh auth status` 探针(`ISSUE_PROBE`),烧机期即可证明认证/权限可用,不必等第一次真写才发现 token 过期。真写失败 → 引擎重试 → dead_letter → `issue-filing-dead-letter` 元告警走 Lark,GitHub 挂了不会静默。Issue 正文中文人读优先:发生了什么 / 检测指标(桶表)/ 证据日志(脱敏后逐字)/ 建议处理 + 指纹页脚;恢复后自动关单并留恢复说明(`FKST_ISSUE_AUTOCLOSE=1` 默认开)。
+
+**阈值校准闭环**:所有阈值默认值未经真实流量校准(和初筛 pattern 同级别的诚实边界)。dry-run 期间每条"本应提单"都有 `ISSUE_OUTBOUND mode=dry-run` 日志,Web 稳定性 tab 直接把它们渲染成"演练"列表——烧机一段时间看这个列表调阈值,再翻真写开关。
 
 ## 关键设计决策
 

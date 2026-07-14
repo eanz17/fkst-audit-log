@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
+  Activity,
   AlertTriangle,
   Bell,
   Boxes,
@@ -15,6 +16,7 @@ import {
   ShieldAlert,
   SlidersHorizontal
 } from 'lucide-react';
+import { wouldHaveFiled } from '../server/issue-log';
 import { fetchDashboard } from './lib/api';
 import { formatDateTime, formatRelative, inTimeRange } from './lib/format';
 import { Badge } from './components/Badge';
@@ -25,6 +27,9 @@ import type {
   DashboardPayload,
   EventFilter,
   Finding,
+  Incident,
+  IssueAction,
+  IssuePosture,
   PipelineService,
   TabKey,
   TimeRange
@@ -36,7 +41,8 @@ const tabs: Array<{ key: TabKey; label: string; icon: React.ReactNode }> = [
   { key: 'events', label: '审计事件', icon: <FileSearch size={16} /> },
   { key: 'findings', label: '分析发现', icon: <ShieldAlert size={16} /> },
   { key: 'alerts', label: '告警', icon: <Bell size={16} /> },
-  { key: 'config', label: '配置', icon: <SlidersHorizontal size={16} /> }
+  { key: 'config', label: '配置', icon: <SlidersHorizontal size={16} /> },
+  { key: 'stability', label: '稳定性', icon: <Activity size={16} /> }
 ];
 
 const timeRanges: Array<{ value: TimeRange; label: string }> = [
@@ -60,7 +66,8 @@ const tabControls: Record<TabKey, { search: boolean; range: boolean }> = {
   events: { search: true, range: true },
   findings: { search: true, range: false },
   alerts: { search: true, range: true },
-  config: { search: false, range: false }
+  config: { search: false, range: false },
+  stability: { search: false, range: false }
 };
 
 const activeTabStorageKey = 'fkst-audit-monitor.activeTab';
@@ -314,6 +321,11 @@ function pipelineHealth(data: DashboardPayload): { tone: Tone; label: string; no
   return { tone: 'success', label: '正常', note: `${active}/${data.services.length} 活跃，其余待触发` };
 }
 
+// Meta-alerts describe the monitoring machinery itself (dead-lettered
+// deliveries, issue-filing budget) — they surface via pipeline health and the
+// 稳定性 tab, and must not masquerade as audit findings sent to on-call.
+const metaAlertCategories = new Set(['pipeline-dead-letter', 'issue-filing-dead-letter', 'issue-budget-exhausted']);
+
 // The single most urgent thing to act on, or null when all clear. Level-
 // triggered from data — we never nag on warnings, only surface real danger.
 function topAttention(data: DashboardPayload): { text: string; tab: TabKey } | null {
@@ -324,7 +336,11 @@ function topAttention(data: DashboardPayload): { text: string; tab: TabKey } | n
       tab: dl ? 'findings' : 'pipeline'
     };
   }
-  const realHigh = data.alerts.filter((a) => a.mode === 'real' && (a.severity === 'critical' || a.severity === 'high'));
+  const realHigh = data.alerts.filter(
+    (a) => !metaAlertCategories.has(a.category)
+      && a.mode === 'real'
+      && (a.severity === 'critical' || a.severity === 'high')
+  );
   if (realHigh.length) {
     return { text: `有 ${realHigh.length} 条高危告警已真实发送到值班渠道`, tab: 'alerts' };
   }
@@ -781,6 +797,189 @@ function AlertsView({ alerts, query, range }: { alerts: AlertRecord[]; query: st
   );
 }
 
+// 中文信号名 for display; the raw slug stays visible as the machine name.
+const signalNames: Record<string, string> = {
+  'recurring-failure': '反复失败',
+  'error-spike': '错误激增',
+  flapping: '状态抖动',
+  'pipeline-dead-letter': '管线死信'
+};
+
+function signalName(signal: string) {
+  return signalNames[signal] || signal;
+}
+
+function incidentStateTone(state: string): Tone {
+  if (state === 'open') return 'danger';
+  if (state === 'recovering') return 'warning';
+  if (state === 'closed') return 'success';
+  if (state === 'candidate') return 'info';
+  return 'neutral';
+}
+
+// Reuse the existing severity accents: an open incident deserves the danger
+// edge, a recovering one the warning edge; candidate/closed stay plain.
+function incidentEdgeSeverity(state: string): string | undefined {
+  if (state === 'open') return 'critical';
+  if (state === 'recovering') return 'high';
+  return undefined;
+}
+
+function issueActionBadge(action: IssueAction) {
+  if (action.action === 'outbound') {
+    return action.mode === 'dry-run'
+      ? <Badge tone="info" title="dry-run：仅记录，未真实提单">演练</Badge>
+      : <Badge tone="danger" title="真实外发到 GitHub">外发</Badge>;
+  }
+  if (action.action === 'filed') return <Badge tone="success">已提单</Badge>;
+  if (action.action === 'skip') return <Badge>跳过</Badge>;
+  if (action.action === 'probe') return <Badge tone="info">探测</Badge>;
+  return <Badge tone="warning">预算耗尽</Badge>;
+}
+
+function issueActionDetail(action: IssueAction) {
+  if (action.action === 'filed' && action.url) {
+    return (
+      <a href={action.url} target="_blank" rel="noreferrer" className="mono">
+        {action.number != null ? `#${action.number}` : action.url}
+      </a>
+    );
+  }
+  if (action.action === 'outbound') {
+    return (
+      <>
+        {action.severity ? <Badge tone={severityTone(action.severity)}>{action.severity}</Badge> : null}
+        <span className="compact"> {action.title}</span>
+      </>
+    );
+  }
+  if (action.action === 'skip') {
+    return <Badge tone="warning" title="跳过原因">{action.reason}</Badge>;
+  }
+  if (action.action === 'probe') {
+    return (
+      <>
+        <Badge tone={action.ok ? 'success' : 'danger'}>{action.ok ? 'ok' : 'fail'}</Badge>
+        {action.detail ? <span className="muted"> {action.detail}</span> : null}
+      </>
+    );
+  }
+  return <span className="mono">{action.used} / {action.cap}</span>;
+}
+
+function StabilityView({
+  incidents,
+  actions,
+  posture
+}: {
+  incidents: Incident[];
+  actions: IssueAction[];
+  posture: IssuePosture;
+}) {
+  // Calibration signal: what the proxy WOULD have filed with write enabled.
+  const rehearsed = wouldHaveFiled(actions).length;
+  const empty = incidents.length === 0 && actions.length === 0;
+
+  return (
+    <div className="view-stack" data-od-id="stability-view">
+      <section className="event-summary" aria-label="提单姿态" data-od-id="issue-posture">
+        <div>
+          <span className="summary-label">提单模式</span>
+          <Badge tone={posture.write ? 'danger' : 'info'}>{posture.write ? '真实提单' : 'dry-run'}</Badge>
+          <span className="summary-subtle">
+            {posture.write ? '真实创建 GitHub issue' : rehearsed > 0 ? `演练中会提单 ${rehearsed} 次` : '仅记录，不外发'}
+          </span>
+        </div>
+        <div>
+          <span className="summary-label">目标仓库</span>
+          <strong>{posture.repo}</strong>
+          <span className="summary-subtle">via {posture.transport}</span>
+        </div>
+        <div>
+          <span className="summary-label">自动关单</span>
+          <Badge tone={posture.autoclose ? 'success' : 'neutral'}>{posture.autoclose ? '开启' : '关闭'}</Badge>
+        </div>
+        <div>
+          <span className="summary-label">稳定性检测</span>
+          <Badge tone={posture.detectEnabled ? 'success' : 'warning'}>{posture.detectEnabled ? '开启' : '关闭'}</Badge>
+          {!posture.detectEnabled ? <span className="summary-subtle">STABILITY_DETECT_ENABLED=1 后生效</span> : null}
+        </div>
+      </section>
+
+      {empty ? (
+        <EmptyState
+          title="尚无稳定性事件"
+          detail="stability-sentinel 还没有产出 INCIDENT 状态转换，issue-proxy 也没有提单活动；检测到 recurring-failure / error-spike 等信号后此处自动展示。"
+        />
+      ) : (
+        <>
+          {incidents.length ? (
+            <section className="finding-list" aria-label="稳定性事件" data-od-id="incidents-view">
+              {incidents.map((incident) => (
+                <article
+                  className="finding-card"
+                  key={incident.fp}
+                  data-severity={incidentEdgeSeverity(incident.state)}
+                  data-od-id={`incident-${incident.fp}`}
+                >
+                  <div className="finding-main">
+                    <div className="finding-head">
+                      <Badge tone={incidentStateTone(incident.state)}>{incident.state}</Badge>
+                      <Badge title="事件指纹（djb2 校验和）">fp:{incident.fp}</Badge>
+                      <span className="mono compact muted">{incident.signal}</span>
+                    </div>
+                    <h2>{signalName(incident.signal)}</h2>
+                    <p>失败 {incident.fails} / 总量 {incident.total} · 覆盖 {incident.bucketsCovered} 个时间桶</p>
+                  </div>
+                  <div className="finding-side">
+                    <span className="tile-label">状态转换</span>
+                    <strong>{incident.transitions} 次</strong>
+                    <span className="tile-label">最近转换</span>
+                    <p>{formatDateTime(incident.lastSeen)}</p>
+                  </div>
+                </article>
+              ))}
+            </section>
+          ) : (
+            <EmptyState title="尚无稳定性事件" detail="stability-sentinel 检测到信号后会在这里出现事件卡片；下方的提单活动可用于校准阈值。" />
+          )}
+
+          {actions.length ? (
+            <section className="panel table-panel" aria-label="提单活动" data-od-id="issue-activity-view">
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>动作</th>
+                      <th>kind</th>
+                      <th>fp</th>
+                      <th>详情</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {actions.map((action) => (
+                      <tr key={action.id}>
+                        <td data-label="时间">{formatDateTime(action.timestamp)}</td>
+                        <td data-label="动作">{issueActionBadge(action)}</td>
+                        <td data-label="kind"><span className="mono">{action.kind}</span></td>
+                        <td data-label="fp"><span className="mono compact">{action.fp || '—'}</span></td>
+                        <td data-label="详情">{issueActionDetail(action)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ) : (
+            <EmptyState title="尚无提单活动" detail="issue-proxy 的每次演练 / 提单 / 跳过都会追加一行；dry-run 行用于在开启真实提单前校准检测阈值。" />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function ConfigView({ data }: { data: DashboardPayload }) {
   return (
     <section className="panel table-panel" aria-label="配置" data-od-id="config-view">
@@ -900,6 +1099,16 @@ function App() {
           {activeTab === 'findings' ? <FindingsView findings={data.findings} query={query} /> : null}
           {activeTab === 'alerts' ? <AlertsView alerts={data.alerts} query={query} range={range} /> : null}
           {activeTab === 'config' ? <ConfigView data={data} /> : null}
+          {activeTab === 'stability' ? (
+            // A dev-server hot reload can briefly pair the new UI with an
+            // older adapter whose payload lacks these fields; degrade to the
+            // honest empty view instead of white-screening the whole app.
+            <StabilityView
+              incidents={data.incidents ?? []}
+              actions={data.issueActions ?? []}
+              posture={data.issuePosture ?? { write: false, repo: '未知（adapter 需重启）', transport: 'gh', autoclose: true, detectEnabled: false }}
+            />
+          ) : null}
         </>
       ) : null}
     </main>

@@ -19,3 +19,23 @@ version = "workspace"
 name = "alert-proxy"
 source = "workspace"
 version = "workspace"
+
+[[package]]
+name = "stability-sentinel"
+source = "workspace"
+version = "workspace"
+
+[[package]]
+name = "issue-proxy"
+source = "workspace"
+version = "workspace"
+
+[[package]]
+name = "issue-watcher"
+source = "workspace"
+version = "workspace"
+
+[[package]]
+name = "issue-solver"
+source = "workspace"
+version = "workspace"

@@ -11,16 +11,25 @@ local limits = {
   dedup_key = 512,
 }
 local sent_marker_ttl_seconds = 24 * 60 * 60
-local lark_field_order = {
-  "schema",
-  "severity",
-  "category",
-  "summary",
-  "evidence",
-  "action",
-  "source_path",
-  "batch_id",
-  "dedup_key",
+-- Fields the Lark card renders explicitly (title / body blocks / footer);
+-- anything else in the payload is appended as an extra block so new fields
+-- are never silently dropped.
+local lark_known_fields = {
+  schema = true,
+  severity = true,
+  category = true,
+  summary = true,
+  evidence = true,
+  action = true,
+  source_path = true,
+  batch_id = true,
+  dedup_key = true,
+}
+local severity_labels = {
+  critical = "严重",
+  high = "高危",
+  medium = "中危",
+  low = "低危",
 }
 
 function M.sent_marker_ttl_seconds()
@@ -95,15 +104,21 @@ function M.json_escape(text)
   return escaped
 end
 
+function M.severity_label(severity)
+  return severity_labels[tostring(severity or ""):lower()]
+    or tostring(severity or ""):upper()
+end
+
 -- Slack-compatible {"text": "..."} body; most webhook receivers (Slack,
 -- Mattermost, generic collectors) accept this shape directly.
 function M.render_body(payload)
   local text = table.concat({
-    ":rotating_light: [" .. tostring(payload.severity):upper() .. "] " .. tostring(payload.category),
-    "Summary: " .. tostring(payload.summary),
-    "Evidence: " .. tostring(payload.evidence),
-    "Action: " .. tostring(payload.action),
-    "Source: " .. tostring(payload.source_path),
+    ":rotating_light: [" .. tostring(payload.severity):upper() .. " "
+      .. M.severity_label(payload.severity) .. "] " .. tostring(payload.category),
+    "摘要: " .. tostring(payload.summary),
+    "建议处理: " .. tostring(payload.action),
+    "证据: " .. tostring(payload.evidence),
+    "来源: " .. tostring(payload.source_path),
   }, "\n")
   return '{"text": "' .. M.json_escape(text) .. '"}'
 end
@@ -113,44 +128,49 @@ local function lark_header_template(severity)
   if normalized == "critical" then
     return "red"
   end
-  if normalized == "high" or normalized == "medium" then
+  if normalized == "high" then
     return "orange"
   end
-  return "blue"
+  if normalized == "medium" then
+    return "yellow"
+  end
+  return "grey"
 end
 
-local function ordered_alert_fields(payload)
-  local fields = {}
-  local seen = {}
-  for _, field in ipairs(lark_field_order) do
-    if payload[field] ~= nil then
-      table.insert(fields, field)
-      seen[field] = true
-    end
-  end
-
+local function extra_alert_fields(payload)
   local extras = {}
   for key, _ in pairs(payload) do
     local field = tostring(key)
-    if not seen[field] then
+    if not lark_known_fields[field] then
       table.insert(extras, field)
     end
   end
   table.sort(extras)
-  for _, field in ipairs(extras) do
-    table.insert(fields, field)
-  end
-  return fields
+  return extras
 end
 
+-- Human-first card: what happened / what to do / raw evidence, with routing
+-- internals (source, batch, dedup key) demoted to a grey footer line.
 function M.render_lark_card_content(payload)
-  local title = "Aevatar audit alert [" .. tostring(payload.severity):upper() .. "]"
+  local title = "🚨 审计告警 · " .. M.severity_label(payload.severity)
+    .. " · " .. tostring(payload.category)
+
   local elements = {}
-  for _, field in ipairs(ordered_alert_fields(payload)) do
+  local function add_markdown(content)
     table.insert(elements, '{"tag":"markdown","content":"'
-      .. M.json_escape("**" .. field .. "**\n" .. tostring(payload[field]))
-      .. '"}')
+      .. M.json_escape(content) .. '"}')
   end
+
+  add_markdown("**📝 发生了什么**\n" .. tostring(payload.summary))
+  add_markdown("**🛠️ 建议处理**\n" .. tostring(payload.action))
+  add_markdown("**🔎 证据日志**\n```\n" .. tostring(payload.evidence) .. "\n```")
+  for _, field in ipairs(extra_alert_fields(payload)) do
+    add_markdown("**" .. field .. "**\n" .. tostring(payload[field]))
+  end
+  table.insert(elements, '{"tag":"hr"}')
+  add_markdown('<font color="grey">来源 ' .. tostring(payload.source_path)
+    .. " · 批次 " .. tostring(payload.batch_id or "-")
+    .. " · 去重键 " .. tostring(payload.dedup_key) .. "</font>")
 
   return '{"schema":"2.0","config":{"wide_screen_mode":true},"header":'
     .. '{"title":{"tag":"plain_text","content":"' .. M.json_escape(title) .. '"},'

@@ -3,7 +3,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isAevatarRecordSuspicious } from './aevatar-risk.js';
-import { runtimeLogFailed } from './runtime-health.js';
+import {
+  issueActivity,
+  latestIncidentsByFp,
+  parseIncidentLine,
+  parseIssueLine,
+  type Incident,
+  type IncidentEntry,
+  type IssueAction,
+  type IssueEntry
+} from './issue-log.js';
+import { cacheValueIsFresh, deadLetterBatchId, runtimeLogFailed } from './runtime-health.js';
 
 type SourceMode = 'live' | 'empty';
 
@@ -67,6 +77,16 @@ interface AevatarPoll {
   at: string | null;
 }
 
+// Posture of the issue-filing surface: none of these are secrets, but WHETHER
+// real GitHub writes are on is the single most important fact on the 稳定性 tab.
+interface IssuePosture {
+  write: boolean;
+  repo: string;
+  transport: string;
+  autoclose: boolean;
+  detectEnabled: boolean;
+}
+
 interface DashboardPayload {
   generatedAt: string;
   sourceMode: SourceMode;
@@ -90,6 +110,9 @@ interface DashboardPayload {
   events: AuditEvent[];
   findings: Finding[];
   alerts: AlertRecord[];
+  incidents: Incident[];
+  issueActions: IssueAction[];
+  issuePosture: IssuePosture;
   config: ConfigItem[];
 }
 
@@ -119,6 +142,16 @@ const envKeys = [
   'ALERT_WEBHOOK_URL',
   'ALERT_WEBHOOK_URL_CRITICAL',
   'ALERT_FALLBACK_WEBHOOK_URL',
+  // Issue-filing / stability posture. FKST_REDACT_EXTRA_KEYS/PATTERNS are
+  // deliberately NOT surfaced: the redaction patterns themselves describe what
+  // secrets look like, which is exactly what a read-only dashboard must not leak.
+  'FKST_ISSUE_WRITE',
+  'FKST_ISSUE_REPO',
+  'FKST_ISSUE_TRANSPORT',
+  'FKST_ISSUE_AUTOCLOSE',
+  'FKST_ISSUE_MAX_PER_DAY',
+  'FKST_ISSUE_MAX_OPEN',
+  'STABILITY_DETECT_ENABLED',
   'AEVATAR_AUDIT_ENABLED',
   'AEVATAR_AUDIT_NYXID_SERVICE',
   'AEVATAR_AUDIT_PATH',
@@ -159,6 +192,13 @@ function defaultFor(key: string): string | undefined {
     FKST_DURABLE_ROOT: durableRoot,
     FKST_ALERT_WRITE: '0',
     AUDIT_ALERT_MIN_SEVERITY: 'high',
+    FKST_ISSUE_WRITE: '0',
+    FKST_ISSUE_REPO: 'eanz17/fkst-audit-log',
+    FKST_ISSUE_TRANSPORT: 'gh',
+    FKST_ISSUE_AUTOCLOSE: '1',
+    FKST_ISSUE_MAX_PER_DAY: '5',
+    FKST_ISSUE_MAX_OPEN: '10',
+    STABILITY_DETECT_ENABLED: '0',
     AEVATAR_AUDIT_ENABLED: '1',
     AEVATAR_AUDIT_NYXID_SERVICE: 'aevatar',
     AEVATAR_AUDIT_PATH: '/api/audit/trail',
@@ -175,6 +215,16 @@ async function exists(target: string): Promise<boolean> {
   try {
     await fs.access(target);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+async function hasRecoveredAnalysis(batchId: string | null): Promise<boolean> {
+  if (!batchId) return false;
+  const file = path.join(runtimeRoot, 'cache', 'audit-analyzer', 'result', batchId, '=value');
+  try {
+    return cacheValueIsFresh(await fs.readFile(file, 'utf8'));
   } catch {
     return false;
   }
@@ -235,11 +285,17 @@ function isoFromLogName(file: string): string | null {
   return new Date(seconds * 1000).toISOString();
 }
 
-function serviceFromFile(file: string): PipelineService['id'] | null {
+// The stability services are scraped for the 稳定性 tab but are not pipeline
+// tiles — their health story is told by INCIDENT/ISSUE_* lines, not by tiles.
+type ScrapedService = PipelineService['id'] | 'stability-sentinel' | 'issue-proxy';
+
+function serviceFromFile(file: string): ScrapedService | null {
   const base = path.basename(file);
   if (base.startsWith('audit-watcher.')) return 'audit-watcher';
   if (base.startsWith('audit-analyzer.')) return 'audit-analyzer';
   if (base.startsWith('alert-proxy.')) return 'alert-proxy';
+  if (base.startsWith('stability-sentinel.')) return 'stability-sentinel';
+  if (base.startsWith('issue-proxy.')) return 'issue-proxy';
   return null;
 }
 
@@ -437,11 +493,13 @@ interface RuntimeParse {
   alerts: AlertRecord[];
   aevatarEvents: AuditEvent[];
   aevatarPoll: AevatarPoll;
+  incidents: Incident[];
+  issueActions: IssueAction[];
 }
 
 async function parseRuntime(): Promise<RuntimeParse> {
   const files = await listRuntimeLogs();
-  const serviceMap = new Map<PipelineService['id'], PipelineService>([
+  const serviceMap = new Map<ScrapedService, PipelineService>([
     ['audit-watcher', { id: 'audit-watcher', label: '日志采集 · watcher', role: '采集入口', status: 'idle', lastSeen: null, detail: '待启动：还没有采集日志' }],
     ['audit-analyzer', { id: 'audit-analyzer', label: 'LLM 分析 · analyzer', role: '分析阶段', status: 'idle', lastSeen: null, detail: '待触发：有 batch 才会运行分析' }],
     ['alert-proxy', { id: 'alert-proxy', label: '告警投递 · proxy', role: '告警阶段', status: 'idle', lastSeen: null, detail: '待触发：有高风险 finding 才会投递' }]
@@ -451,7 +509,12 @@ async function parseRuntime(): Promise<RuntimeParse> {
   const aevatarEvents: AuditEvent[] = [];
   const seenAevatar = new Set<string>();
   const aevatarPoll: AevatarPoll = { records: 0, seen: 0, batches: 0, at: null };
-  const deadLetters: Array<{ timestamp: string; why: string }> = [];
+  const deadLetters: Array<{ timestamp: string; why: string; batchId: string | null }> = [];
+  // Stability lines carry no per-line timestamp, so ordering is the log file's
+  // name-encoded time plus line order. Files iterate newest-first here; one
+  // batch per file lets a single reverse() restore oldest-first afterwards.
+  const incidentBatches: IncidentEntry[][] = [];
+  const issueBatches: IssueEntry[][] = [];
 
   for (const file of files) {
     const service = serviceFromFile(file);
@@ -504,8 +567,26 @@ async function parseRuntime(): Promise<RuntimeParse> {
       }
       if (/DEAD_LETTER|dead_letter/.test(text) && /WHY=/.test(text)) {
         const why = (text.match(/WHY=([^\n]*)/)?.[1] || '').slice(0, 200);
-        deadLetters.push({ timestamp, why });
+        deadLetters.push({ timestamp, why, batchId: deadLetterBatchId(text) });
       }
+    }
+
+    if (service === 'stability-sentinel') {
+      const batch: IncidentEntry[] = [];
+      for (const line of text.split(/\r?\n/)) {
+        const incident = parseIncidentLine(line);
+        if (incident) batch.push({ ...incident, timestamp });
+      }
+      if (batch.length) incidentBatches.push(batch);
+    }
+
+    if (service === 'issue-proxy') {
+      const batch: IssueEntry[] = [];
+      for (const line of text.split(/\r?\n/)) {
+        const parsed = parseIssueLine(line);
+        if (parsed) batch.push({ line: parsed, timestamp });
+      }
+      if (batch.length) issueBatches.push(batch);
     }
 
     if (service === 'alert-proxy') {
@@ -550,15 +631,20 @@ async function parseRuntime(): Promise<RuntimeParse> {
   // Synthesize a real pipeline-health finding from the analyzer dead letters so
   // the operator sees the ACTUAL failure (analyzer batches dead-lettering,
   // typically because the codex CLI is unavailable) instead of a blank tab.
-  if (deadLetters.length > 0) {
-    deadLetters.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-    const latest = deadLetters[0];
+  const unresolvedDeadLetters = (
+    await Promise.all(deadLetters.map(async (dead) => ({ dead, recovered: await hasRecoveredAnalysis(dead.batchId) })))
+  )
+    .filter(({ recovered }) => !recovered)
+    .map(({ dead }) => dead);
+  if (unresolvedDeadLetters.length > 0) {
+    unresolvedDeadLetters.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    const latest = unresolvedDeadLetters[0];
     findings.push({
       id: 'finding-pipeline-health',
       batchId: 'pipeline-health',
       severity: 'high',
       category: 'pipeline_health',
-      summary: `audit-analyzer 有 ${deadLetters.length} 个批次进入死信（LLM 分析未产出）`,
+      summary: `audit-analyzer 有 ${unresolvedDeadLetters.length} 个批次进入死信（LLM 分析未产出）`,
       evidence: latest.why || 'analyzer 投递进入 dead_letter',
       recommendedAction: '确认 host 上 codex CLI 已安装并登录（spawn_codex_sync 依赖它）；或查看 audit-analyzer.dead_letter 日志定位 analyze 部门错误',
       cached: false
@@ -566,12 +652,18 @@ async function parseRuntime(): Promise<RuntimeParse> {
   }
 
   const alerts = Array.from(alertsByKey.values()).sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  // Oldest-first replay so the last INCIDENT transition per fingerprint wins;
+  // the activity list flips to most-recent-first for display.
+  const incidents = latestIncidentsByFp(incidentBatches.reverse().flat());
+  const issueActions = issueActivity(issueBatches.reverse().flat()).reverse().slice(0, 80);
   return {
     services: Array.from(serviceMap.values()),
     findings: findings.slice(0, 80),
     alerts: alerts.slice(0, 80),
     aevatarEvents,
-    aevatarPoll
+    aevatarPoll,
+    incidents,
+    issueActions
   };
 }
 
@@ -590,7 +682,7 @@ function configItems(): ConfigItem[] {
 }
 
 async function dashboardPayload(): Promise<DashboardPayload> {
-  const [{ services, findings, alerts, aevatarEvents, aevatarPoll }, cachedAevatarEvents, fileEvents] = await Promise.all([
+  const [{ services, findings, alerts, aevatarEvents, aevatarPoll, incidents, issueActions }, cachedAevatarEvents, fileEvents] = await Promise.all([
     parseRuntime(),
     readCachedAevatarEvents(),
     parseWatchEvents()
@@ -638,6 +730,17 @@ async function dashboardPayload(): Promise<DashboardPayload> {
     events,
     findings,
     alerts,
+    // Honest-empty doctrine: incidents/issueActions come only from real
+    // runtime logs — never fabricate sample issues, demo mode included.
+    incidents,
+    issueActions,
+    issuePosture: {
+      write: process.env.FKST_ISSUE_WRITE === '1',
+      repo: process.env.FKST_ISSUE_REPO || 'eanz17/fkst-audit-log',
+      transport: process.env.FKST_ISSUE_TRANSPORT || 'gh',
+      autoclose: (process.env.FKST_ISSUE_AUTOCLOSE ?? '1') === '1',
+      detectEnabled: process.env.STABILITY_DETECT_ENABLED === '1'
+    },
     config: configItems()
   };
 }

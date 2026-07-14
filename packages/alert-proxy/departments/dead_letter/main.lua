@@ -44,7 +44,8 @@ function pipeline(event)
     return
   end
   local body = '{"text": "' .. core.json_escape(
-    "[ALERT-PROXY DEAD LETTER] alert delivery failed permanently: " .. why:sub(1, 500)
+    "🚨 [告警通道故障] 一条审计告警重试多次仍发送失败,已进入死信,需人工处理。原因: "
+      .. why:sub(1, 500)
       .. " (delivery_id=" .. tostring(p.delivery_id) .. ")") .. '"}'
   local result = exec_sync({
     cmd = 'curl -sS -o /dev/null -w "%{http_code}" -X POST'

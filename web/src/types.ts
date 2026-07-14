@@ -48,6 +48,49 @@ export interface AlertRecord {
   count?: number;
 }
 
+// Collapsed stability-sentinel view: one row per fingerprint with the latest
+// INCIDENT transition's fields plus how long the transition history is.
+export interface Incident {
+  fp: string;
+  signal: string;
+  state: string;
+  fails: number;
+  total: number;
+  bucketsCovered: number;
+  transitions: number;
+  lastSeen: string;
+}
+
+// One issue-proxy action row. `kind` carries the issue kind for
+// outbound/filed/skip, the probe kind (auth) for probes, and the exhausted
+// scope (day/open) for budget lines.
+export interface IssueAction {
+  id: string;
+  timestamp: string;
+  action: 'outbound' | 'filed' | 'skip' | 'probe' | 'budget';
+  kind: string;
+  mode?: string;
+  fp?: string;
+  severity?: string;
+  signal?: string;
+  title?: string;
+  reason?: string;
+  number?: number;
+  url?: string;
+  ok?: boolean;
+  detail?: string;
+  used?: number;
+  cap?: number;
+}
+
+export interface IssuePosture {
+  write: boolean;
+  repo: string;
+  transport: string;
+  autoclose: boolean;
+  detectEnabled: boolean;
+}
+
 export interface ConfigItem {
   key: string;
   value: string;
@@ -85,9 +128,12 @@ export interface DashboardPayload {
   events: AuditEvent[];
   findings: Finding[];
   alerts: AlertRecord[];
+  incidents: Incident[];
+  issueActions: IssueAction[];
+  issuePosture: IssuePosture;
   config: ConfigItem[];
 }
 
-export type TabKey = 'pipeline' | 'events' | 'findings' | 'alerts' | 'config';
+export type TabKey = 'pipeline' | 'events' | 'findings' | 'alerts' | 'config' | 'stability';
 export type TimeRange = '15m' | '1h' | '6h' | '24h' | 'all';
 export type EventFilter = 'all' | 'suspect' | 'normal';

@@ -25,11 +25,12 @@ function pipeline(event)
     schema = "alert-proxy.alert.v1",
     severity = "high",
     category = "pipeline-dead-letter",
-    summary = "audit-analyzer delivery moved to dead letter: " .. why:sub(1, 400),
+    summary = "监控流水线自身故障:audit-analyzer 分析持续失败,该批日志已进入死信队列(期间的审计日志不会产生告警)。原因:"
+      .. why:sub(1, 400),
     evidence = "delivery_id=" .. tostring(p.delivery_id)
       .. " queue=" .. tostring(p.queue)
       .. " error_class=" .. tostring(p.error_class),
-    action = "Inspect fkst dead letters (fkst.observe) and the analyzer logs, then redrive.",
+    action = "用 fkst.observe 查看死信详情和 analyzer 日志,修复根因(常见:codex 不可用或输出格式不合法)后 redrive 重放。",
     source_path = "fkst://dead_letter",
     batch_id = "dead-letter",
     dedup_key = "audit-alert/pipeline-dead-letter/"

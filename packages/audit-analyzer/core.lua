@@ -80,6 +80,10 @@ function M.build_prompt(log_lines, limit)
     'Object schema: {"severity":"critical|high|medium|low","category":"short-slug",'
       .. '"evidence_line":"<one exact line copied verbatim from the input>",'
       .. '"why":"...","recommended_action":"..."}',
+    "Write why and recommended_action in plain Simplified Chinese (简体中文) for a",
+    "human on-call reader: why states what happened and why it is suspicious in",
+    "1-2 sentences; recommended_action gives concrete next steps. Avoid jargon;",
+    "keep category an English short-slug and evidence_line verbatim.",
     "Return [] when nothing is anomalous.",
     "",
     "=== LOG LINES START ===",
