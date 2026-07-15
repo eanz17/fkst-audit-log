@@ -1,0 +1,23 @@
+kind = "library"
+name = "audit_shared"
+
+[code]
+root = "."
+
+[lib_deps]
+libraries = []
+
+[dependency_constraints]
+allowed_lib_deps = []
+
+[library]
+name = "audit_shared"
+stable_id = "fkst.library.audit_shared"
+version = "workspace"
+
+[exports]
+exact = true
+public = ["audit_shared.digest", "audit_shared.redaction"]
+
+[visibility]
+public = false

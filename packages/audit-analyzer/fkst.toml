@@ -5,5 +5,11 @@ persistence_class = "judgment_pipeline"
 [code]
 root = "."
 
+[lib_deps]
+libraries = ["audit_shared"]
+
+[dependency_constraints]
+allowed_lib_deps = ["audit_shared"]
+
 [event_deps]
 packages = ["audit-watcher", "alert-proxy"]

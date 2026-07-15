@@ -27,12 +27,12 @@ function pipeline(event)
     schema = "alert-proxy.alert.v1",
     severity = "high",
     category = "issue-filing-dead-letter",
-    summary = "issue-proxy 开单持续失败,该请求已进入死信队列(对应的稳定性事件不会出现在 GitHub issue 上)。原因:"
+    summary = "issue-proxy 开单流程持续失败,该请求已进入死信队列。GitHub create 可能已经成功,不能据此断言 issue 不存在。原因:"
       .. why:sub(1, 400),
     evidence = "delivery_id=" .. tostring(p.delivery_id)
       .. " queue=" .. tostring(p.queue)
       .. " error_class=" .. tostring(p.error_class),
-    action = "用 fkst.observe 查看死信详情和 issue-proxy 日志,修复根因(常见:gh 未登录或 nyxid 服务不可用)后 redrive 重放。",
+    action = "先按 provenance/fingerprint 在 GitHub 核查是否已创建,再用 fkst.observe 查看死信和 issue-proxy 日志;修复根因后 redrive。",
     source_path = "fkst://dead_letter",
     batch_id = "dead-letter",
     dedup_key = "issue-alert/issue-filing-dead-letter/"

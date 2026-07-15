@@ -1,3 +1,5 @@
+local digest = require("audit_shared.digest")
+
 local M = {}
 
 -- Hard byte budgets from the issue-proxy.issue.v1 contract.
@@ -5,8 +7,8 @@ local max_line_bytes = 2048
 local max_title_bytes = 200
 local max_body_bytes = 16384
 local max_evidence_lines = 20
-local max_analysis_bytes = 4000
 local incident_ttl_seconds = 14 * 24 * 60 * 60
+local open_request_marker_ttl_seconds = 10 * 60
 local index_limit = 256
 local detector_revision = "stability-v1"
 
@@ -61,6 +63,10 @@ end
 
 function M.incident_ttl_seconds()
   return incident_ttl_seconds
+end
+
+function M.open_request_marker_ttl_seconds()
+  return open_request_marker_ttl_seconds
 end
 
 function M.detector_revision()
@@ -160,7 +166,7 @@ local function field(record, name)
   return M.record_field(record, name)
 end
 
--- Tolerant jsonl parse: malformed lines are skipped, never fail the scan.
+-- Tolerant parser retained for non-snapshot callers and focused core tests.
 function M.parse_jsonl(content)
   local records = {}
   for line in (tostring(content or "") .. "\n"):gmatch("([^\n]*)\n") do
@@ -172,6 +178,38 @@ function M.parse_jsonl(content)
     end
   end
   return records
+end
+
+-- The watcher publishes snapshots with one final newline via atomic rename.
+-- Missing termination, blank rows, or one malformed row means the file cannot
+-- prove complete coverage and must freeze incident evolution for this tick.
+function M.parse_snapshot_jsonl(content)
+  content = tostring(content or "")
+  if content == "" then
+    return {}, nil
+  end
+  if content:sub(-1) ~= "\n" then
+    return nil, "unterminated-line"
+  end
+  local records = {}
+  local line_number = 0
+  for line in content:gmatch("([^\n]*)\n") do
+    line_number = line_number + 1
+    if line == "" then
+      return nil, "empty-line-" .. tostring(line_number)
+    end
+    local ok, decoded = pcall(json.decode, line)
+    if not ok or type(decoded) ~= "table" then
+      return nil, "invalid-json-line-" .. tostring(line_number)
+    end
+    table.insert(records, decoded)
+  end
+  return records, nil
+end
+
+-- Cross-package contract with audit-watcher's atomic snapshot publisher.
+function M.aevatar_snapshot_lock_key()
+  return "fkst-audit-log/aevatar-events-snapshot"
 end
 
 function M.normalize_outcome(outcome)
@@ -269,7 +307,7 @@ end
 -- Evidence line shape consumed verbatim by the issue body (issue-proxy
 -- redacts before egress).
 function M.render_event_line(record)
-  local line = table.concat({
+  local parts = {
     "aevatar event",
     "id=" .. field(record, "id"),
     "scope=" .. field(record, "scopeId"),
@@ -278,7 +316,28 @@ function M.render_event_line(record)
     "outcome=" .. field(record, "outcome"),
     "occurredAt=" .. field(record, "occurredAtUtc"),
     "resource=" .. field(record, "resourceType") .. "/" .. field(record, "resourceId"),
-  }, " ")
+  }
+  local correlation = field(record, "correlationId")
+  if correlation ~= "" then
+    local hex = digest.short_hex(correlation, 32)
+    local trace_ref = "cr-" .. hex:sub(1, 8) .. "-" .. hex:sub(9, 16)
+      .. "-" .. hex:sub(17, 24) .. "-" .. hex:sub(25, 32)
+    table.insert(parts, "correlation=" .. correlation)
+    table.insert(parts, "trace_ref=" .. trace_ref)
+  end
+  for _, spec in ipairs({
+    { "error_code", "errorCode" },
+    { "stage", "stage" },
+    { "http_status", "httpStatus" },
+    { "dependency", "dependency" },
+    { "owner", "componentOwner" },
+  }) do
+    local value = field(record, spec[2])
+    if value ~= "" then
+      table.insert(parts, spec[1] .. "=" .. value)
+    end
+  end
+  local line = table.concat(parts, " ")
   return M.utf8_safe_truncate(line, max_line_bytes)
 end
 
@@ -905,10 +964,15 @@ function M.encode_index(segments)
       table.insert(unique, segment)
     end
   end
-  while #unique > index_limit do
-    table.remove(unique, 1)
+  if #unique > index_limit then
+    error("stability-sentinel: incident-index-capacity: active="
+      .. tostring(#unique) .. " cap=" .. tostring(index_limit), 0)
   end
   return table.concat(unique, "\n")
+end
+
+function M.index_limit()
+  return index_limit
 end
 
 function M.incident_id(fp_hex, open_bucket)
@@ -921,6 +985,12 @@ end
 
 function M.open_dedup_key(fp_hex, open_bucket)
   return "stability-issue/open/" .. tostring(fp_hex) .. "/" .. tostring(open_bucket)
+end
+
+function M.open_request_marker_key(fp_hex, open_bucket)
+  return "stability-sentinel/open-request/"
+    .. M.sanitize_segment(fp_hex, 16) .. "/"
+    .. M.sanitize_segment(open_bucket, 32)
 end
 
 function M.comment_dedup_key(fp_hex, open_bucket, cooldown_bucket)
@@ -1040,54 +1110,6 @@ function M.render_close_body(opts)
     footer_line(opts),
   }, "\n")
   return M.utf8_safe_truncate(body, max_body_bytes)
-end
-
-function M.prepend_analysis(body, analysis)
-  return M.utf8_safe_truncate(
-    "## 分析\n\n" .. tostring(analysis) .. "\n\n" .. tostring(body),
-    max_body_bytes)
-end
-
-function M.build_llm_prompt(opts)
-  return table.concat({
-    "You are an SRE assistant summarizing a deterministic stability incident.",
-    "Signal: " .. tostring(opts.signal) .. " (" .. M.signal_label_zh(opts.signal) .. ").",
-    "Component: " .. tostring(opts.component) .. ".",
-    "The evidence lines between the markers are the only facts; never invent",
-    "events that are not present in them.",
-    'Return strict JSON only: {"analysis":"..."} with exactly that one key, no prose.',
-    "analysis is 2-4 sentences of plain Simplified Chinese (简体中文) for a human",
-    "on-call reader: what pattern the evidence shows and the most likely",
-    "direction to investigate first.",
-    "",
-    "=== EVIDENCE START ===",
-    tostring(opts.evidence_text or ""),
-    "=== EVIDENCE END ===",
-  }, "\n")
-end
-
--- Fail-closed parse of the codex stdout: a JSON object whose ONLY key is
--- "analysis" with a bounded non-empty string. Anything else yields nil and
--- the caller falls back to the template body.
-function M.parse_llm_analysis(stdout)
-  local raw = tostring(stdout or ""):gsub("^%s+", ""):gsub("%s+$", "")
-  if raw:sub(1, 1) ~= "{" or raw:sub(-1) ~= "}" then
-    return nil
-  end
-  local ok, decoded = pcall(json.decode, raw)
-  if not ok or type(decoded) ~= "table" then
-    return nil
-  end
-  for key in pairs(decoded) do
-    if key ~= "analysis" then
-      return nil
-    end
-  end
-  local analysis = decoded.analysis
-  if type(analysis) ~= "string" or analysis == "" or #analysis > max_analysis_bytes then
-    return nil
-  end
-  return analysis
 end
 
 return M

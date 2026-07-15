@@ -6,4 +6,4 @@ persistence_class = "stateless_adapter"
 root = "."
 
 [event_deps]
-packages = ["alert-proxy", "issue-solver"]
+packages = ["alert-proxy"]

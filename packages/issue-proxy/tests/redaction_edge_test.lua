@@ -12,6 +12,21 @@ return {
     t.eq(core.redact("Authorization=Bearer ghp_secret123value"), "Authorization=***")
   end,
 
+  test_lowercase_bare_bearer_is_masked = function()
+    t.eq(core.redact("proxy authorization bearer secret-value"),
+      "proxy authorization Bearer ***")
+  end,
+
+  test_default_identity_fields_include_id_and_resource = function()
+    t.eq(core.redact("id=request-123456 resource=customer-record-123456"),
+      "id=request-… resource=customer…")
+  end,
+
+  test_resource_type_survives_resource_id_truncation = function()
+    t.eq(core.redact("resource=external_identity_binding/login-finalize-request-42"),
+      "resource=external_identity_binding/login-fi…")
+  end,
+
   test_single_quoted_shell_value_is_masked = function()
     t.eq(core.redact("password='hunter2hunter2'"), "password='***'")
   end,

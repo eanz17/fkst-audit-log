@@ -1,3 +1,5 @@
+local digest = require("audit_shared.digest")
+
 local M = {}
 
 -- Lines matching any of these Lua patterns (checked against the lowercased
@@ -22,9 +24,12 @@ local default_patterns = {
   "error",
 }
 
-local max_batch_bytes = 24 * 1024
+-- Reliable delivery payloads are capped at 64 KiB after JSON encoding. Keep
+-- content at 8 KiB so worst-case \u00XX escaping plus metadata stays bounded.
+local max_batch_bytes = 8 * 1024
 local max_line_bytes = 2048
 local batch_cache_ttl_seconds = 3600
+local batch_contract_revision = "v3"
 local registry_cache_key = "audit-watcher/registry"
 local registry_limit = 256
 local aevatar_seen_ttl_seconds = 7 * 24 * 60 * 60
@@ -118,8 +123,28 @@ function M.aevatar_active_count_key(source_id)
 end
 
 function M.aevatar_seen_key(source_id, audit_id)
+  local raw_id = tostring(audit_id or "")
   return "audit-watcher/aevatar/seen/" .. M.file_key(source_id)
-    .. "/" .. M.sanitize_segment(audit_id, 120)
+    .. "/" .. M.sanitize_segment(raw_id, 100) .. "-" .. M.short_checksum(raw_id)
+end
+
+-- Existing deployments used the sanitized id without a checksum. That key is
+-- unambiguous only when sanitization is an identity operation, so migrate just
+-- those markers and never inherit a possible cleaning/truncation collision.
+function M.aevatar_legacy_seen_key(source_id, audit_id)
+  local raw_id = tostring(audit_id or "")
+  if raw_id == "" or #raw_id > 120
+      or raw_id:find("[^A-Za-z0-9._-]") ~= nil
+      or raw_id:match("^%.+$") ~= nil then
+    return nil
+  end
+  return "audit-watcher/aevatar/seen/" .. M.file_key(source_id) .. "/" .. raw_id
+end
+
+-- This literal is intentionally shared with stability-sentinel. Snapshot
+-- publishers and readers use the same runtime flock across package boundaries.
+function M.aevatar_snapshot_lock_key()
+  return "fkst-audit-log/aevatar-events-snapshot"
 end
 
 function M.aevatar_seen_ttl_seconds()
@@ -146,14 +171,19 @@ function M.patterns()
   return default_patterns
 end
 
--- Deterministic bounded checksum over a string. Lua numbers are doubles, so
--- keep the accumulator below 2^32 to stay exact.
+-- Full SHA-256 is used for persisted integrity. Runtime-key identities use a
+-- 128-bit prefix through short_checksum so their individual path segments stay
+-- below the engine's 255-byte limit.
 function M.checksum(text)
-  local hash = 5381
-  for index = 1, #text do
-    hash = (hash * 33 + text:byte(index)) % 4294967296
-  end
-  return tostring(hash)
+  return digest.sha256_hex(tostring(text or ""))
+end
+
+function M.short_checksum(text)
+  return digest.short_hex(tostring(text or ""), 32)
+end
+
+function M.checksum_number(text)
+  return digest.numeric_prefix(tostring(text or ""))
 end
 
 -- Collapse a free-form string into one valid runtime-key segment. Long inputs
@@ -176,7 +206,7 @@ function M.sanitize_segment(text, limit)
 end
 
 function M.file_key(path)
-  return M.sanitize_segment(path, 100) .. "-" .. M.checksum(tostring(path or ""))
+  return M.sanitize_segment(path, 100) .. "-" .. M.short_checksum(path)
 end
 
 function M.offset_cache_key(path)
@@ -223,10 +253,11 @@ function M.utf8_safe_truncate(text, limit)
   elseif first >= 192 then
     needed = 2
   end
-  if cut + needed - 1 > limit then
-    cut = cut - 1
+  local end_at = cut + needed - 1
+  if end_at > limit or end_at > #text then
+    end_at = cut - 1
   end
-  return text:sub(1, cut)
+  return text:sub(1, end_at)
 end
 
 function M.url_encode(text)
@@ -266,7 +297,7 @@ function M.content_fingerprint(content, size)
   size = math.min(tonumber(size) or #content, #content)
   local prefix = content:sub(1, size)
   return table.concat({
-    "v1",
+    "v2",
     tostring(size),
     M.checksum(prefix),
   }, ":")
@@ -275,9 +306,9 @@ end
 function M.content_matches_fingerprint(content, fingerprint)
   content = tostring(content or "")
   local version, old_size, old_sum =
-    tostring(fingerprint or ""):match("^(v1):(%d+):(%d+)$")
-  if version ~= "v1" then
-    return true
+    tostring(fingerprint or ""):match("^(v2):(%d+):([0-9a-f]+)$")
+  if version ~= "v2" or #old_sum ~= 64 then
+    return false
   end
   old_size = tonumber(old_size) or 0
   if #content < old_size then
@@ -291,6 +322,7 @@ end
 function M.filter_lines(text)
   local suspicious = {}
   for line in (tostring(text or "") .. "\n"):gmatch("([^\n]*)\n") do
+    line = line:gsub("\r$", "")
     if line ~= "" and M.is_suspicious(line) then
       if #line > max_line_bytes then
         line = M.utf8_safe_truncate(line, max_line_bytes)
@@ -425,6 +457,24 @@ function M.aevatar_next_cursor(decoded)
   return tostring(cursor)
 end
 
+function M.aevatar_query_watermark(decoded)
+  if type(decoded) ~= "table" then
+    return nil
+  end
+  local watermark = decoded.queryWatermark or decoded.QueryWatermark
+  if watermark == nil and type(decoded.data) == "table" then
+    watermark = decoded.data.queryWatermark or decoded.data.QueryWatermark
+  end
+  local watermark_type = type(watermark)
+  if watermark_type ~= "string" and watermark_type ~= "number" then
+    return nil
+  end
+  if tostring(watermark) == "" then
+    return nil
+  end
+  return tostring(watermark)
+end
+
 function M.aevatar_record_id(record)
   local id = field(record, "id")
   if id == "" then
@@ -452,8 +502,9 @@ function M.max_aevatar_record_time(records)
   return max_time
 end
 
--- Splits suspicious lines into newline-joined chunks bounded by
--- max_batch_bytes so cached batch content and downstream prompts stay small.
+-- Splits suspicious lines into newline-joined chunks bounded so the redacted
+-- content can safely travel in a reliable payload below the engine's 64 KiB
+-- serialized limit, even with worst-case JSON escaping.
 function M.chunk_lines(lines)
   local chunks = {}
   local current = {}
@@ -474,14 +525,16 @@ function M.chunk_lines(lines)
   return chunks
 end
 
--- Batch identity is derived from file identity plus the byte range it covers,
--- so a replay of the same range yields the same id (and downstream dedup).
-function M.batch_id(path, from_offset, to_offset, chunk_index)
+-- Include the contract revision and content checksum so changing chunk bounds
+-- cannot reuse an analyzer result produced for an older payload shape.
+function M.batch_id(path, from_offset, to_offset, chunk_index, content)
   return table.concat({
+    batch_contract_revision,
     M.file_key(path),
     tostring(from_offset),
     tostring(to_offset),
     tostring(chunk_index),
+    M.short_checksum(content),
   }, "-")
 end
 

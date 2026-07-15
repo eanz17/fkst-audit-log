@@ -440,7 +440,6 @@ function PipelineView({ data }: { data: DashboardPayload }) {
             <div><dt>service</dt><dd>{data.polling.service}</dd></div>
             <div><dt>path</dt><dd>{data.polling.path}</dd></div>
             <div><dt>默认窗口</dt><dd>最近 {data.polling.lookbackHours} 小时</dd></div>
-            <div><dt>时间片</dt><dd>{data.polling.sliceMinutes} 分钟</dd></div>
             <div><dt>最多记录</dt><dd>{data.polling.maxRecords}</dd></div>
             <div><dt>take</dt><dd>{data.polling.take}</dd></div>
             <div><dt>最多页数</dt><dd>{data.polling.maxPagesPerTick}</dd></div>
@@ -891,13 +890,19 @@ function StabilityView({
           </span>
         </div>
         <div>
-          <span className="summary-label">目标仓库</span>
-          <strong>{posture.repo}</strong>
-          <span className="summary-subtle">via {posture.transport}</span>
+          <span className="summary-label">故障仓库</span>
+          <strong>{posture.aevatarRepo}</strong>
+          <span className="summary-subtle">管线：{posture.pipelineRepo} · via {posture.transport}</span>
         </div>
         <div>
-          <span className="summary-label">自动关单</span>
-          <Badge tone={posture.autoclose ? 'success' : 'neutral'}>{posture.autoclose ? '开启' : '关闭'}</Badge>
+          <span className="summary-label">自动修复</span>
+          <Badge tone={posture.devloopConfigured ? 'success' : 'warning'}>
+            {posture.devloopConfigured ? '官方 consensus' : '未配置'}
+          </Badge>
+          <span className="summary-subtle">
+            {posture.devloopConfigured ? 'Aevatar issue 自动附加 fkst-dev:enabled' : 'devloop 预检通过后再开启'}
+            {' · '}哨兵自动关单{posture.autoclose ? '开启' : '关闭'}
+          </span>
         </div>
         <div>
           <span className="summary-label">稳定性检测</span>
@@ -1106,7 +1111,15 @@ function App() {
             <StabilityView
               incidents={data.incidents ?? []}
               actions={data.issueActions ?? []}
-              posture={data.issuePosture ?? { write: false, repo: '未知（adapter 需重启）', transport: 'gh', autoclose: true, detectEnabled: false }}
+              posture={data.issuePosture ?? {
+                write: false,
+                aevatarRepo: '未知（adapter 需重启）',
+                pipelineRepo: '未知（adapter 需重启）',
+                transport: 'gh',
+                autoclose: false,
+                detectEnabled: false,
+                devloopConfigured: false
+              }}
             />
           ) : null}
         </>

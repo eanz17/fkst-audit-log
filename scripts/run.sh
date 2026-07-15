@@ -8,15 +8,15 @@
 #
 # BIN resolution: $BIN env, then .fkst/env, then sibling fkst-substrate build.
 set -eu
+umask 077
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 
-if [ "${FKST_SKIP_ENV_FILE:-}" != "1" ] && [ -f "$ROOT/.fkst/env" ]; then
-  set -a
+if [ "${FKST_SKIP_ENV_FILE:-}" != "1" ]; then
   # shellcheck disable=SC1091
-  . "$ROOT/.fkst/env"
-  set +a
+  . "$ROOT/scripts/secure-profile.sh"
+  fkst_load_secure_profile_defaults "$ROOT/.fkst/env"
 fi
 
 BIN=${BIN:-"$ROOT/../fkst-substrate/target/debug/fkst-framework"}
@@ -30,9 +30,7 @@ PACKAGE_ROOTS="--package-root $ROOT/packages/audit-watcher \
   --package-root $ROOT/packages/audit-analyzer \
   --package-root $ROOT/packages/alert-proxy \
   --package-root $ROOT/packages/stability-sentinel \
-  --package-root $ROOT/packages/issue-proxy \
-  --package-root $ROOT/packages/issue-watcher \
-  --package-root $ROOT/packages/issue-solver"
+  --package-root $ROOT/packages/issue-proxy"
 
 cmd=${1:-help}
 
@@ -48,8 +46,12 @@ case "$cmd" in
     export FKST_RUNTIME_ROOT="$scratch/runtime"
     export FKST_DURABLE_ROOT="$scratch/durable"
     mkdir -p "$FKST_RUNTIME_ROOT" "$FKST_DURABLE_ROOT"
+    chmod 700 "$FKST_RUNTIME_ROOT" "$FKST_DURABLE_ROOT" 2>/dev/null || true
     unset FKST_ALERT_WRITE ALERT_WEBHOOK_URL ALERT_WEBHOOK_URL_CRITICAL ALERT_FALLBACK_WEBHOOK_URL || true
-    unset FKST_ISSUE_WRITE FKST_ISSUE_REPO FKST_ISSUE_TRANSPORT FKST_ISSUE_AUTOCLOSE STABILITY_DETECT_ENABLED || true
+    unset FKST_ISSUE_WRITE FKST_ISSUE_REPO FKST_AEVATAR_ISSUE_REPO FKST_PIPELINE_ISSUE_REPO || true
+    unset FKST_ISSUE_TRANSPORT FKST_ISSUE_AUTOCLOSE FKST_ISSUE_CLOSE_ON_DROP || true
+    unset FKST_AEVATAR_DEVLOOP_ENABLED STABILITY_DETECT_ENABLED || true
+    unset AUDIT_ANALYZER_CODEX_ENABLED || true
     echo "== conformance =="
     # shellcheck disable=SC2086
     "$BIN" conformance --project-root "$ROOT" $PACKAGE_ROOTS
@@ -64,6 +66,7 @@ case "$cmd" in
     event=${4:?usage: run.sh run <pkg> <dept> '<event-json>'}
     export FKST_RUNTIME_ROOT="${FKST_RUNTIME_ROOT:-$ROOT/.fkst/run/runtime}"
     mkdir -p "$FKST_RUNTIME_ROOT"
+    chmod 700 "$FKST_RUNTIME_ROOT" 2>/dev/null || true
     # shellcheck disable=SC2086
     exec "$BIN" run "$ROOT/packages/$pkg/departments/$dept/main.lua" \
       --project-root "$ROOT" $PACKAGE_ROOTS \
@@ -75,6 +78,7 @@ case "$cmd" in
     export FKST_RUNTIME_ROOT="${FKST_RUNTIME_ROOT:-$ROOT/.fkst/run/runtime}"
     export FKST_DURABLE_ROOT="${FKST_DURABLE_ROOT:-$ROOT/.fkst/run/durable}"
     mkdir -p "$FKST_RUNTIME_ROOT" "$FKST_DURABLE_ROOT" "$ROOT/watch"
+    chmod 700 "$ROOT/.fkst" "$ROOT/.fkst/run" "$FKST_RUNTIME_ROOT" "$FKST_DURABLE_ROOT" "$ROOT/watch" 2>/dev/null || true
     echo "runtime root: $FKST_RUNTIME_ROOT"
     echo "durable root: $FKST_DURABLE_ROOT"
     echo "watching:     $ROOT/watch/*.log"
@@ -88,10 +92,17 @@ case "$cmd" in
     else
       echo "alert mode:   dry-run (set FKST_ALERT_WRITE=1 in .fkst/env for real alerts, mode=${ALERT_DELIVERY_MODE:-lark})"
     fi
-    if [ "${FKST_ISSUE_WRITE:-}" = "1" ]; then
-      echo "issue mode:   REAL (FKST_ISSUE_WRITE=1, repo=${FKST_ISSUE_REPO:-eanz17/fkst-audit-log}, transport=${FKST_ISSUE_TRANSPORT:-gh}, autoclose=${FKST_ISSUE_AUTOCLOSE:-1})"
+    if [ "${FKST_ISSUE_WRITE:-}" = "1" ] && [ "${FKST_ALERT_WRITE:-}" = "1" ]; then
+      echo "filed alerts: REAL (mode=${ALERT_DELIVERY_MODE:-lark}, durable outbox; clear on delivery ACK)"
+    elif [ "${FKST_ISSUE_WRITE:-}" = "1" ]; then
+      echo "filed alerts: held in durable outbox until FKST_ALERT_WRITE=1"
     else
-      echo "issue mode:   dry-run (set FKST_ISSUE_WRITE=1 in .fkst/env for real GitHub issues, repo=${FKST_ISSUE_REPO:-eanz17/fkst-audit-log})"
+      echo "filed alerts: inactive while issue writes are dry-run"
+    fi
+    if [ "${FKST_ISSUE_WRITE:-}" = "1" ]; then
+      echo "issue mode:   REAL (FKST_ISSUE_WRITE=1, aevatar=${FKST_AEVATAR_ISSUE_REPO:-aevatarAI/aevatar}, pipeline=${FKST_PIPELINE_ISSUE_REPO:-eanz17/fkst-audit-log}, transport=${FKST_ISSUE_TRANSPORT:-gh}, autoclose=${FKST_ISSUE_AUTOCLOSE:-0}, close_on_drop=${FKST_ISSUE_CLOSE_ON_DROP:-0})"
+    else
+      echo "issue mode:   dry-run (set FKST_ISSUE_WRITE=1 in .fkst/env for real GitHub issues, aevatar=${FKST_AEVATAR_ISSUE_REPO:-aevatarAI/aevatar}, pipeline=${FKST_PIPELINE_ISSUE_REPO:-eanz17/fkst-audit-log})"
     fi
     # shellcheck disable=SC2086
     exec "$BIN" supervise --project-root "$ROOT" --framework-bin "$BIN" $PACKAGE_ROOTS

@@ -6,11 +6,18 @@ local evidence_limit = 2048
 local why_limit = 1000
 local action_limit = 1000
 local max_findings = 5
+local max_batch_content_bytes = 8 * 1024
 local analysis_result_ttl_seconds = 24 * 60 * 60
-local alert_dedup_bucket_seconds = 24 * 60 * 60
+local analysis_contract_revision = "redacted-v3-sanitized-output"
+local audit_digest = require("audit_shared.digest")
+local audit_redaction = require("audit_shared.redaction")
 
 function M.max_findings()
   return max_findings
+end
+
+function M.max_batch_content_bytes()
+  return max_batch_content_bytes
 end
 
 function M.analysis_result_ttl_seconds()
@@ -22,11 +29,18 @@ function M.severity_rank(severity)
 end
 
 function M.analysis_result_key(batch_id)
-  return "audit-analyzer/result/" .. tostring(batch_id)
+  return "audit-analyzer/result/" .. analysis_contract_revision .. "/" .. tostring(batch_id)
 end
 
 function M.checksum(text)
+  return audit_digest.sha256_hex(tostring(text or ""))
+end
+
+-- Rolling-upgrade verifier for audit-watcher.batch.v2 deliveries created
+-- before the SHA-256 contract. New identities must never use this checksum.
+function M.legacy_checksum(text)
   local hash = 5381
+  text = tostring(text or "")
   for index = 1, #text do
     hash = (hash * 33 + text:byte(index)) % 4294967296
   end
@@ -45,19 +59,67 @@ function M.sanitize_segment(text, limit)
   return cleaned
 end
 
--- Alert identity: same category + same evidence within the same day bucket is
--- the same alert. This is what alert-proxy uses to suppress repeats.
-function M.alert_dedup_key(finding, now_seconds)
-  local bucket = math.floor((tonumber(now_seconds) or 0) / alert_dedup_bucket_seconds)
+function M.alert_dedup_key(finding, batch_id)
   return table.concat({
     "audit-alert",
     M.sanitize_segment(finding.category, 60),
-    M.checksum(tostring(finding.evidence_line)),
-    tostring(bucket),
+    audit_digest.short_hex(tostring(finding.evidence_line or ""), 32),
+    audit_digest.short_hex(tostring(batch_id or ""), 32),
   }, "/")
 end
 
+function M.redact_log_lines(text)
+  return audit_redaction.redact_log_lines(text)
+end
+
+function M.sanitize_findings(findings)
+  local sanitized = {}
+  for _, finding in ipairs(findings or {}) do
+    table.insert(sanitized, {
+      severity = finding.severity,
+      category = finding.category,
+      evidence_line = M.redact_log_lines(finding.evidence_line),
+      why = M.redact_log_lines(finding.why),
+      recommended_action = M.redact_log_lines(finding.recommended_action),
+    })
+  end
+  return sanitized
+end
+
+local function json_string(value)
+  local escaped = tostring(value or "")
+    :gsub("\\", "\\\\")
+    :gsub('"', '\\"')
+    :gsub("\b", "\\b")
+    :gsub("\f", "\\f")
+    :gsub("\n", "\\n")
+    :gsub("\r", "\\r")
+    :gsub("\t", "\\t")
+    :gsub("[%z\1-\31]", function(char)
+      return string.format("\\u%04x", char:byte())
+    end)
+  return '"' .. escaped .. '"'
+end
+
+function M.encode_findings(findings)
+  local rows = {}
+  for _, finding in ipairs(findings or {}) do
+    table.insert(rows, "{"
+      .. '"severity":' .. json_string(finding.severity) .. ","
+      .. '"category":' .. json_string(finding.category) .. ","
+      .. '"evidence_line":' .. json_string(finding.evidence_line) .. ","
+      .. '"why":' .. json_string(finding.why) .. ","
+      .. '"recommended_action":' .. json_string(finding.recommended_action)
+      .. "}")
+  end
+  return "[" .. table.concat(rows, ",") .. "]"
+end
+
 function M.build_prompt(log_lines, limit)
+  -- Defense in depth: the department already passes its canonical sanitized
+  -- view so evidence checks use identical bytes, but prompt construction must
+  -- never become a raw-log escape hatch for a future caller.
+  log_lines = M.redact_log_lines(log_lines)
   return table.concat({
     "You are a security analyst reviewing pre-filtered audit log lines.",
     "Analyze ONLY the log lines between the LOG LINES markers below.",
@@ -128,6 +190,7 @@ function M.parse_findings(stdout)
     if type(item) ~= "table"
       or M.severity_rank(item.severity) == nil
       or not bounded(item.category, category_limit)
+      or item.category:match("^[a-z0-9][a-z0-9._-]*$") == nil
       or not bounded(item.evidence_line, evidence_limit)
       or not bounded(item.why, why_limit)
       or not bounded(item.recommended_action, action_limit) then
@@ -144,10 +207,20 @@ function M.parse_findings(stdout)
   return findings
 end
 
--- Anti-hallucination gate: the evidence line must literally appear in the
--- batch that was analyzed.
+-- Anti-hallucination gate: evidence must equal one complete input line. A
+-- substring match would let a model return a generic token such as "Error".
 function M.evidence_present(finding, batch_lines)
-  return tostring(batch_lines or ""):find(tostring(finding.evidence_line), 1, true) ~= nil
+  local expected = tostring(finding.evidence_line or "")
+  if expected == "" or expected:find("\n", 1, true) ~= nil
+    or expected:find("\r", 1, true) ~= nil then
+    return false
+  end
+  for line in (tostring(batch_lines or "") .. "\n"):gmatch("([^\n]*)\n") do
+    if line == expected then
+      return true
+    end
+  end
+  return false
 end
 
 return M

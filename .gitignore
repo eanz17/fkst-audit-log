@@ -1,4 +1,6 @@
 .fkst/env
+.fkst/aevatar-devloop.env
+.fkst/bin/
 .fkst/run/
 watch/*.log
 packages/audit-watcher/tests/fixtures/tmp_*.log
@@ -7,3 +9,4 @@ packages/audit-watcher/tests/fixtures/tmp_*.log
 web/node_modules/
 web/dist/
 *.tsbuildinfo
+__pycache__/

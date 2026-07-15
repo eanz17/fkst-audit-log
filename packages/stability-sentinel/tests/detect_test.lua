@@ -33,7 +33,8 @@ local function mock_stability_env(overrides)
   mock_env("STABILITY_DLQ_WINDOW_MINUTES", overrides.dlq_window_minutes or "")
   mock_env("STABILITY_QUIET_WINDOWS", overrides.quiet_windows or "")
   mock_env("STABILITY_COMMENT_COOLDOWN_HOURS", overrides.comment_cooldown_hours or "")
-  mock_env("STABILITY_LLM_SUMMARY", overrides.llm_summary or "")
+  mock_env("FKST_AEVATAR_ISSUE_REPO", overrides.aevatar_issue_repo or "")
+  mock_env("FKST_PIPELINE_ISSUE_REPO", overrides.pipeline_issue_repo or "")
 end
 
 local function mock_grep(stdout)
@@ -134,10 +135,33 @@ return {
 
   test_missing_snapshot_is_clean_noop = function()
     reset_state()
-    mock_stability_env({ runtime_root = "/tmp/fkst-stability-sentinel-missing" })
-    local result = run_detect(1001)
+    local result = tick(1001, { runtime_root = "/tmp/fkst-stability-sentinel-missing" })
     t.eq(result.exit_code, 0)
     t.eq(#result.raises, 0)
+  end,
+
+  test_dead_letters_open_pipeline_issue_without_aevatar_snapshot = function()
+    reset_state({
+      { "pipeline-dead-letter", "audit-watcher.aevatar_audit_poll", "provider-unavailable", "framework-log" },
+    })
+    local missing_root = "/tmp/fkst-stability-sentinel-dlq-only"
+    local scan_now = now()
+    local dl_text = table.concat({
+      dl_line(os.date("!%Y-%m-%dT%H:%M:%SZ", scan_now - 40 * 60),
+        "audit-watcher.aevatar_audit_poll", "provider-unavailable", "missing-snapshot-d1"),
+      dl_line(os.date("!%Y-%m-%dT%H:%M:%SZ", scan_now - 20 * 60),
+        "audit-watcher.aevatar_audit_poll", "provider-unavailable", "missing-snapshot-d2"),
+      dl_line(os.date("!%Y-%m-%dT%H:%M:%SZ", scan_now - 5 * 60),
+        "audit-watcher.aevatar_audit_poll", "provider-unavailable", "missing-snapshot-d3"),
+    }, "\n") .. "\n"
+
+    t.eq(#tick(1001, { runtime_root = missing_root }, dl_text).raises, 0)
+    local second = tick(1301, { runtime_root = missing_root }, dl_text)
+    t.eq(second.exit_code, 0)
+    t.eq(#second.raises, 1)
+    t.eq(second.raises[1].payload.signal, "pipeline-dead-letter")
+    t.eq(second.raises[1].payload.repo, "eanz17/fkst-audit-log")
+    t.is_nil(second.raises[1].payload.devloop_enabled)
   end,
 
   test_sustained_failures_open_exactly_one_issue = function()
@@ -161,6 +185,8 @@ return {
     t.eq(payload.fingerprint, fp)
     t.eq(payload.signal, "recurring-failure")
     t.eq(payload.severity, "high")
+    t.eq(payload.repo, "aevatarAI/aevatar")
+    t.eq(payload.devloop_enabled, "1")
     t.is_true(payload.title:find("[fkst-stability] ", 1, true) == 1)
     t.is_true(payload.title:find("持续失败", 1, true) ~= nil)
     t.is_true(payload.title:find("fp:" .. fp, 1, true) ~= nil)
@@ -179,6 +205,48 @@ return {
     local third = tick(1601)
     t.eq(third.exit_code, 0)
     t.eq(#third.raises, 0)
+  end,
+
+  test_open_incident_reemits_request_after_marker_expires = function()
+    reset_state({ { "recurring-failure", "workflow.reconcile" } })
+    file.write(snapshot_path, recurring_fixture("workflow.reconcile"))
+    t.eq(#tick(1001).raises, 0)
+    local opened = tick(1301)
+    t.eq(#opened.raises, 1)
+    local payload = opened.raises[1].payload
+    cache_set(core.open_request_marker_key(payload.fingerprint, "2026-07-13T0900"), "", 1)
+
+    local reconciled = tick(1601)
+    t.eq(#reconciled.raises, 1)
+    t.eq(reconciled.raises[1].payload.dedup_key, payload.dedup_key)
+    t.eq(#tick(1901).raises, 0)
+  end,
+
+  test_partial_snapshot_freezes_open_incident_instead_of_proving_recovery = function()
+    reset_state({ { "recurring-failure", "workflow.partial" } })
+    file.write(snapshot_path, recurring_fixture("workflow.partial"))
+    t.eq(#tick(1001, { quiet_windows = "1" }).raises, 0)
+    t.eq(#tick(1301, { quiet_windows = "1" }).raises, 1)
+
+    local fingerprint = core.fingerprint(
+      "recurring-failure", "workflow.partial", "scope-a", "workflow")
+    local before = core.decode_incident(cache_get(core.incident_cache_key(fingerprint.segment)))
+    t.eq(before.state, "open")
+
+    -- This is valid JSON but not a complete watcher snapshot: the atomic
+    -- publisher always terminates every JSONL record. Treating it as one quiet
+    -- covered bucket would incorrectly start recovery.
+    file.write(snapshot_path,
+      jsonl_record("workflow.partial", "Success", iso(9, 30, 1)))
+    mock_stability_env({ quiet_windows = "1" })
+    mock_grep()
+    local partial = run_detect(1601)
+    t.eq(partial.exit_code, 0)
+    t.eq(#partial.raises, 0)
+
+    local after = core.decode_incident(cache_get(core.incident_cache_key(fingerprint.segment)))
+    t.eq(after.state, "open")
+    t.eq(after.quiet_count, 0)
   end,
 
   test_recurrence_in_recovery_raises_cooldown_bucketed_comment = function()
@@ -256,6 +324,11 @@ return {
     t.eq(payload.dedup_key, "stability-issue/close/" .. fp .. "/2026-07-13T0900")
     t.is_true(payload.body_md:find("恢复说明", 1, true) ~= nil)
     t.is_true(payload.body_md:find("fp:" .. fp, 1, true) ~= nil)
+    t.eq(cache_get(core.index_cache_key()), "")
+    local segment = core.fingerprint(
+      "error-spike", "job.close", "scope-a", "workflow").segment
+    local closed = core.decode_incident(cache_get(core.incident_cache_key(segment)))
+    t.eq(closed.state, "closed")
   end,
 
   test_dead_letter_lines_open_pipeline_issue = function()
@@ -288,10 +361,48 @@ return {
     t.eq(payload.signal, "pipeline-dead-letter")
     t.eq(payload.severity, "high")
     t.eq(payload.fingerprint, fp)
+    t.eq(payload.repo, "eanz17/fkst-audit-log")
+    t.is_nil(payload.devloop_enabled)
     t.is_true(payload.title:find("管线死信复发", 1, true) ~= nil)
     t.is_true(payload.title:find("fp:" .. fp, 1, true) ~= nil)
     t.is_true(payload.body_md:find("tag=DEAD_LETTER", 1, true) ~= nil)
     t.is_true(payload.body_md:find("观测窗口内累计 3 条", 1, true) ~= nil)
+  end,
+
+  test_routes_aevatar_and_pipeline_incidents_to_separate_repositories = function()
+    reset_state({
+      { "recurring-failure", "workflow.route" },
+      { "pipeline-dead-letter", "alert-proxy.alert_request", "provider-unavailable", "framework-log" },
+    })
+    file.write(snapshot_path, recurring_fixture("workflow.route"))
+    local repos = {
+      aevatar_issue_repo = "aevatarAI/aevatar",
+      pipeline_issue_repo = "eanz17/fkst-audit-log",
+    }
+    t.eq(#tick(1001, repos).raises, 0)
+    local aevatar = tick(1301, repos)
+    t.eq(#aevatar.raises, 1)
+    t.eq(aevatar.raises[1].payload.repo, "aevatarAI/aevatar")
+    t.eq(aevatar.raises[1].payload.devloop_enabled, "1")
+
+    reset_state({
+      { "pipeline-dead-letter", "alert-proxy.alert_request", "provider-unavailable", "framework-log" },
+    })
+    write_snapshot({ jsonl_record("noop.read", "Success", iso(9, 0, 1)) })
+    local scan_now = now()
+    local dl_text = table.concat({
+      dl_line(os.date("!%Y-%m-%dT%H:%M:%SZ", scan_now - 40 * 60),
+        "alert-proxy.alert_request", "provider-unavailable", "route-d1"),
+      dl_line(os.date("!%Y-%m-%dT%H:%M:%SZ", scan_now - 20 * 60),
+        "alert-proxy.alert_request", "provider-unavailable", "route-d2"),
+      dl_line(os.date("!%Y-%m-%dT%H:%M:%SZ", scan_now - 5 * 60),
+        "alert-proxy.alert_request", "provider-unavailable", "route-d3"),
+    }, "\n") .. "\n"
+    t.eq(#tick(1601, repos, dl_text).raises, 0)
+    local pipeline_result = tick(1901, repos, dl_text)
+    t.eq(#pipeline_result.raises, 1)
+    t.eq(pipeline_result.raises[1].payload.repo, "eanz17/fkst-audit-log")
+    t.is_nil(pipeline_result.raises[1].payload.devloop_enabled)
   end,
 
   -- Degraded dead-letter scanning (grep exit 2: missing/unreadable child logs)
@@ -338,39 +449,4 @@ return {
     end
   end,
 
-  test_llm_summary_prepends_analysis_section = function()
-    reset_state({ { "recurring-failure", "llm.good" } })
-    local llm_env = { llm_summary = "1" }
-    file.write(snapshot_path, recurring_fixture("llm.good"))
-    t.eq(#tick(1001, llm_env).raises, 0)
-
-    t.mock_command("codex exec", {
-      stdout = '{"analysis":"失败集中在同一操作,建议先检查最近的配置变更。"}',
-      stderr = "",
-      exit_code = 0,
-    })
-    local second = tick(1301, llm_env)
-    t.eq(second.exit_code, 0)
-    t.eq(#second.raises, 1)
-    local body = second.raises[1].payload.body_md
-    t.is_true(body:find("## 分析", 1, true) == 1)
-    t.is_true(body:find("失败集中在同一操作", 1, true) ~= nil)
-    t.is_true(body:find("## 发生了什么", 1, true) ~= nil)
-  end,
-
-  test_llm_failure_falls_back_to_template_body = function()
-    reset_state({ { "recurring-failure", "llm.bad" } })
-    local llm_env = { llm_summary = "1" }
-    file.write(snapshot_path, recurring_fixture("llm.bad"))
-    t.eq(#tick(1001, llm_env).raises, 0)
-
-    t.mock_command("codex exec", { stdout = "", stderr = "codex down", exit_code = 1 })
-    local second = tick(1301, llm_env)
-    -- Filing never depends on codex: the open still goes out, template body.
-    t.eq(second.exit_code, 0)
-    t.eq(#second.raises, 1)
-    local body = second.raises[1].payload.body_md
-    t.is_true(body:find("## 分析", 1, true) == nil)
-    t.is_true(body:find("## 发生了什么", 1, true) ~= nil)
-  end,
 }

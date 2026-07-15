@@ -18,6 +18,24 @@ local function valid_alert(overrides)
   return alert
 end
 
+local function issue_filed_alert(overrides)
+  local repo = "aevatarAI/aevatar"
+  local number = "2753"
+  local url = "https://github.com/" .. repo .. "/issues/" .. number
+  local alert = valid_alert({
+    category = "issue-filed",
+    source_path = url,
+    dedup_key = "issue-alert/issue-filed/" .. repo .. "/" .. number,
+    repo = repo,
+    issue_number = number,
+    issue_url = url,
+  })
+  for key, value in pairs(overrides or {}) do
+    alert[key] = value
+  end
+  return alert
+end
+
 return {
   test_valid_alert_passes = function()
     t.is_nil(core.validate_alert(valid_alert()))
@@ -39,6 +57,67 @@ return {
 
   test_oversized_field_rejected = function()
     t.eq(core.validate_alert(valid_alert({ category = string.rep("x", 81) })), "invalid-category")
+  end,
+
+  test_issue_filed_alert_builds_canonical_delivery_ack = function()
+    local alert = issue_filed_alert()
+    t.is_nil(core.validate_alert(alert))
+    local ack = core.issue_filed_delivery_ack(alert)
+    t.eq(ack.schema, "alert-proxy.delivery-ack.v1")
+    t.eq(ack.kind, "issue-filed")
+    t.eq(ack.repo, alert.repo)
+    t.eq(ack.issue_number, alert.issue_number)
+    t.eq(ack.dedup_key, alert.dedup_key)
+    local card = json.decode(core.render_lark_card_content(alert))
+    local rendered = {}
+    for _, element in ipairs(card.body.elements) do
+      table.insert(rendered, tostring(element.content or ""))
+    end
+    local card_text = table.concat(rendered, "\n")
+    t.is_true(card_text:find(alert.summary, 1, true) ~= nil)
+    t.is_true(card_text:find(alert.issue_url, 1, true) ~= nil)
+  end,
+
+  test_issue_filed_lark_body_has_stable_downstream_uuid = function()
+    local alert = issue_filed_alert()
+    local first = core.issue_filed_lark_uuid(alert)
+    t.is_true(first:match(
+      "^[0-9a-f]+%-[0-9a-f]+%-8[0-9a-f]+%-a[0-9a-f]+%-[0-9a-f]+$") ~= nil)
+    t.eq(#first, 36)
+
+    local retried = issue_filed_alert({ summary = "retry with the same delivery identity" })
+    t.eq(core.issue_filed_lark_uuid(retried), first)
+    local rendered = json.decode(core.render_lark_message_body(alert, "oc_group"))
+    t.eq(rendered.uuid, first)
+
+    local ordinary = json.decode(core.render_lark_message_body(valid_alert(), "oc_group"))
+    t.is_nil(ordinary.uuid)
+  end,
+
+  test_issue_filed_alert_rejects_noncanonical_identity = function()
+    local alert = issue_filed_alert()
+    alert.issue_number = "02753"
+    t.eq(core.validate_alert(alert), "invalid-issue-filed-alert")
+    alert = issue_filed_alert()
+    alert.issue_url = "https://github.com/other/repo/issues/2753"
+    t.eq(core.validate_alert(alert), "invalid-issue-filed-alert")
+    alert = issue_filed_alert()
+    alert.dedup_key = alert.dedup_key .. "/other"
+    t.eq(core.validate_alert(alert), "invalid-issue-filed-alert")
+  end,
+
+  test_issue_filed_alert_rejects_dot_repo_segments = function()
+    local repo = "../.."
+    local number = "2753"
+    local url = "https://github.com/" .. repo .. "/issues/" .. number
+    local alert = issue_filed_alert({
+      repo = repo,
+      issue_number = number,
+      issue_url = url,
+      source_path = url,
+      dedup_key = "issue-alert/issue-filed/" .. repo .. "/" .. number,
+    })
+    t.eq(core.validate_alert(alert), "invalid-issue-filed-alert")
   end,
 
   test_json_escape_handles_specials = function()

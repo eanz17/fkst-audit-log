@@ -4,7 +4,7 @@ local M = {}
 
 M.spec = {
   consumes = { "alert_request" },
-  produces = {},
+  produces = { "alert_delivery_ack" },
   -- Sibling packages (audit-analyzer) are authorized to produce into this
   -- queue; published_seam is declared by the consuming owner (engine rule).
   published_seam = { "alert_request" },
@@ -59,7 +59,7 @@ end
 
 local function post_lark(payload)
   local base_url = read_env("NYXID_URL") or "https://nyx.chrono-ai.fun"
-  local service = read_env("ALERT_LARK_NYXID_SERVICE") or "api-lark-bot-7"
+  local service = read_env("ALERT_LARK_NYXID_SERVICE") or "api-lark-bot"
   local receive_id = read_env("ALERT_LARK_CHAT_ID")
   if receive_id == nil then
     error("alert-proxy: missing-lark-config: ALERT_LARK_CHAT_ID is not set", 0)
@@ -87,7 +87,7 @@ local function post_lark(payload)
   end
 
   local stdout = tostring(result.stdout or "")
-  if stdout:find('"error"', 1, true) ~= nil or stdout:find('"code":0', 1, true) == nil then
+  if core.parse_lark_success_response(stdout) == nil then
     error("alert-proxy: lark-failed: response=" .. stdout:sub(1, 500), 0)
   end
 end
@@ -98,11 +98,19 @@ function pipeline(event)
   if invalid ~= nil then
     error("alert-proxy: " .. invalid .. ": rejected alert request", 0)
   end
+  local delivery_ack = core.issue_filed_delivery_ack(p)
 
   local marker_key = core.dedup_marker_key(p.dedup_key)
   with_lock(core.send_lock_key(p.dedup_key), function()
     if cache_get(marker_key) ~= nil then
       log.info("alert-proxy dept=send SKIP duplicate dedup_key=" .. tostring(p.dedup_key))
+      if delivery_ack ~= nil then
+        -- Keep the external-effect fact alive while the owner's durable outbox
+        -- is still asking for an ack. This prevents a broken/lost ack route
+        -- from turning a 31-day marker expiry into a second Lark notification.
+        cache_set(marker_key, "1", core.issue_filed_sent_marker_ttl_seconds())
+        raise("alert_delivery_ack", delivery_ack)
+      end
       return
     end
 
@@ -128,7 +136,12 @@ function pipeline(event)
     else
       error("alert-proxy: invalid-delivery-mode: ALERT_DELIVERY_MODE=" .. mode, 0)
     end
-    cache_set(marker_key, "1", core.sent_marker_ttl_seconds())
+    local marker_ttl = delivery_ack ~= nil
+      and core.issue_filed_sent_marker_ttl_seconds() or core.sent_marker_ttl_seconds()
+    cache_set(marker_key, "1", marker_ttl)
+    if delivery_ack ~= nil then
+      raise("alert_delivery_ack", delivery_ack)
+    end
     log.info("alert-proxy dept=send OUTBOUND mode=real severity=" .. tostring(p.severity)
       .. " category=" .. tostring(p.category)
       .. " dedup_key=" .. tostring(p.dedup_key))

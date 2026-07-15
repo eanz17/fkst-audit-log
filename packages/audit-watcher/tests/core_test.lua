@@ -14,6 +14,14 @@ return {
     t.is_true(lines[2]:find("sudo") ~= nil)
   end,
 
+  test_filter_normalizes_crlf_line_endings = function()
+    local lines = core.filter_lines(
+      "sshd: Failed password for root\r\nsystemd: healthy\r\n")
+    t.eq(#lines, 1)
+    t.eq(lines[1], "sshd: Failed password for root")
+    t.is_true(lines[1]:find("\r", 1, true) == nil)
+  end,
+
   test_filter_truncates_oversized_lines = function()
     local long_line = "failed " .. string.rep("x", 5000)
     local lines = core.filter_lines(long_line)
@@ -27,6 +35,13 @@ return {
     t.eq(#lines, 1)
     t.eq(#lines[1], 2047)
     t.is_true(lines[1]:find("中", 1, true) == nil)
+  end,
+
+  test_utf8_truncate_keeps_character_that_ends_at_boundary = function()
+    local value = string.rep("x", 2045) .. "中" .. "z"
+    local truncated = core.utf8_safe_truncate(value, 2048)
+    t.eq(#truncated, 2048)
+    t.is_true(truncated:sub(-3) == "中")
   end,
 
   test_chunking_respects_byte_budget = function()
@@ -47,11 +62,15 @@ return {
   end,
 
   test_batch_id_is_deterministic_and_range_bound = function()
-    local a = core.batch_id("/var/log/audit.log", 0, 100, 1)
-    local b = core.batch_id("/var/log/audit.log", 0, 100, 1)
-    local c = core.batch_id("/var/log/audit.log", 100, 200, 1)
+    local a = core.batch_id("/var/log/audit.log", 0, 100, 1, "failed a")
+    local b = core.batch_id("/var/log/audit.log", 0, 100, 1, "failed a")
+    local c = core.batch_id("/var/log/audit.log", 100, 200, 1, "failed a")
+    local d = core.batch_id("/var/log/audit.log", 0, 100, 1, "failed b")
     t.eq(a, b)
     t.is_true(a ~= c)
+    t.is_true(a ~= d)
+    t.is_true(a:find("v3%-", 1) == 1)
+    t.is_true(#a <= 255)
   end,
 
   test_file_key_distinguishes_paths_with_same_tail = function()
@@ -74,9 +93,14 @@ return {
     t.eq(decoded[2], "/b.log")
   end,
 
-  test_checksum_is_deterministic = function()
-    t.eq(core.checksum("abc"), core.checksum("abc"))
+  test_checksum_is_sha256_and_rejects_known_djb2_collision = function()
+    t.eq(core.checksum(""),
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    t.eq(core.checksum("abc"),
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
     t.is_true(core.checksum("abc") ~= core.checksum("abd"))
+    -- DJB2 maps both two-byte strings to the same 32-bit value.
+    t.is_true(core.checksum("Aa") ~= core.checksum("B@"))
   end,
 
   test_content_fingerprint_allows_append_only = function()
@@ -84,6 +108,7 @@ return {
     local fp = core.content_fingerprint(original, #original)
     t.is_true(core.content_matches_fingerprint(original .. "sudo: denied\n", fp))
     t.is_true(not core.content_matches_fingerprint("auditd: denied\n" .. original, fp))
+    t.is_true(not core.content_matches_fingerprint(original, "v1:24:12345"))
   end,
 
   test_aevatar_path_is_url_encoded = function()
@@ -104,10 +129,44 @@ return {
         { id = "audit-2", occurredAtUtc = "2026-07-09T08:00:03Z" },
       },
       nextCursor = "cursor-2",
+      queryWatermark = "2026-07-09T08:00:03Z",
     }
     t.eq(#core.aevatar_response_records(decoded), 2)
     t.eq(core.aevatar_next_cursor(decoded), "cursor-2")
+    t.eq(core.aevatar_query_watermark(decoded), "2026-07-09T08:00:03Z")
     t.eq(core.max_aevatar_record_time(decoded.records), "2026-07-09T08:00:03Z")
+  end,
+
+  test_aevatar_response_helpers_accept_nested_pascal_case_watermark = function()
+    t.eq(core.aevatar_query_watermark({
+      data = { QueryWatermark = "2026-07-09T08:00:04Z" },
+    }), "2026-07-09T08:00:04Z")
+    t.is_nil(core.aevatar_query_watermark({ queryWatermark = "" }))
+  end,
+
+  test_aevatar_seen_key_checksums_cleaning_and_truncation_collisions = function()
+    local source = "aevatar:/api/audit/trail"
+    local cleaned_a = core.aevatar_seen_key(source, "audit/id")
+    local cleaned_b = core.aevatar_seen_key(source, "audit?id")
+    t.is_true(cleaned_a ~= cleaned_b)
+    t.is_true(cleaned_a:find("audit_id%-" .. core.short_checksum("audit/id") .. "$") ~= nil)
+
+    local shared_tail = string.rep("x", 140)
+    local long_a = core.aevatar_seen_key(source, "prefix-a-" .. shared_tail)
+    local long_b = core.aevatar_seen_key(source, "prefix-b-" .. shared_tail)
+    t.is_true(long_a ~= long_b)
+    t.is_true(long_a:find("-" .. core.short_checksum("prefix-a-" .. shared_tail) .. "$") ~= nil)
+  end,
+
+  test_aevatar_legacy_seen_key_only_accepts_collision_free_ids = function()
+    local source = "aevatar:/api/audit/trail"
+    t.is_true(core.aevatar_legacy_seen_key(source, "audit-123") ~= nil)
+    t.is_nil(core.aevatar_legacy_seen_key(source, "audit/123"))
+    t.is_nil(core.aevatar_legacy_seen_key(source, string.rep("x", 121)))
+  end,
+
+  test_aevatar_snapshot_lock_key_is_cross_package_contract = function()
+    t.eq(core.aevatar_snapshot_lock_key(), "fkst-audit-log/aevatar-events-snapshot")
   end,
 
   test_render_aevatar_record_does_not_make_success_suspicious_by_itself = function()

@@ -9,9 +9,7 @@ M.spec = {
   retry = { max_attempts = 3, base = "30s", cap = "5m" },
 }
 
-local codex_timeout_seconds = 5 * 60
 local dead_letter_scan_timeout_seconds = 10
-local llm_cache_ttl_seconds = 24 * 60 * 60
 
 local function read_env(name)
   local result = exec_sync('printf %s "$' .. name .. '"')
@@ -59,7 +57,8 @@ local function detector_config()
     dlq_window_minutes = bounded_integer(read_env("STABILITY_DLQ_WINDOW_MINUTES"), 60, 1, 10080),
     quiet_windows = bounded_integer(read_env("STABILITY_QUIET_WINDOWS"), 6, 1, 96),
     comment_cooldown_hours = bounded_integer(read_env("STABILITY_COMMENT_COOLDOWN_HOURS"), 6, 1, 240),
-    llm_summary = read_env("STABILITY_LLM_SUMMARY") == "1",
+    aevatar_issue_repo = read_env("FKST_AEVATAR_ISSUE_REPO") or "aevatarAI/aevatar",
+    pipeline_issue_repo = read_env("FKST_PIPELINE_ISSUE_REPO") or "eanz17/fkst-audit-log",
   }
 end
 
@@ -89,40 +88,6 @@ local function dead_letter_text(root)
   end
   log.warn("stability-sentinel dept=detect dead-letter-scan-degraded exit=" .. tostring(code))
   return "", true
-end
-
--- Optional codex paragraph, cached per incident generation. ANY failure
--- (spawn error, timeout, malformed output) logs a warning and returns nil;
--- issue filing must never depend on codex.
-local function llm_analysis(cfg, incident_id, incident, candidate)
-  if not cfg.llm_summary or candidate == nil then
-    return nil
-  end
-  local cache_key = "stability-sentinel/llm/" .. core.sanitize_segment(incident_id, 100)
-  local cached = cache_get(cache_key)
-  if cached ~= nil and cached ~= "" then
-    return cached
-  end
-  local result = spawn_codex_sync({
-    prompt = core.build_llm_prompt({
-      signal = incident.signal,
-      component = incident.component,
-      evidence_text = table.concat(candidate.evidence or {}, "\n"),
-    }),
-    timeout = codex_timeout_seconds,
-  })
-  if type(result) ~= "table" or result.exit_code ~= 0 then
-    local code = type(result) == "table" and tostring(result.exit_code) or "?"
-    log.warn("stability-sentinel dept=detect llm-summary-skip reason=codex-exit-" .. code)
-    return nil
-  end
-  local analysis = core.parse_llm_analysis(result.stdout)
-  if analysis == nil then
-    log.warn("stability-sentinel dept=detect llm-summary-skip reason=malformed-output")
-    return nil
-  end
-  cache_set(cache_key, analysis, llm_cache_ttl_seconds)
-  return analysis
 end
 
 local function raise_issue(kind, incident, candidate, snapshot, cfg)
@@ -160,12 +125,8 @@ local function raise_issue(kind, incident, candidate, snapshot, cfg)
       window_to = candidate.window_last ~= nil
         and core.bucket_label(candidate.window_last, snapshot.bucket_minutes) or nil,
     })
-    local analysis = llm_analysis(cfg, incident_id, incident, candidate)
-    if analysis ~= nil then
-      body = core.prepend_analysis(body, analysis)
-    end
   end
-  raise("issue-proxy.issue_request", {
+  local payload = {
     schema = "issue-proxy.issue.v1",
     kind = kind,
     fingerprint = incident.fp,
@@ -175,7 +136,14 @@ local function raise_issue(kind, incident, candidate, snapshot, cfg)
     body_md = body,
     incident_id = incident_id,
     dedup_key = dedup_key,
-  })
+  }
+  if incident.signal == "pipeline-dead-letter" then
+    payload.repo = cfg.pipeline_issue_repo
+  else
+    payload.repo = cfg.aevatar_issue_repo
+    payload.devloop_enabled = "1"
+  end
+  raise("issue-proxy.issue_request", payload)
 end
 
 -- Runs one fingerprint through the state machine under its per-fp lock.
@@ -230,9 +198,34 @@ local function process_segment(segment, candidate, snapshot, cfg, tick_id)
     end
     for _, action in ipairs(actions) do
       raise_issue(action, next_incident, fired and candidate or nil, snapshot, cfg)
+      if action == "open" then
+        cache_set(core.open_request_marker_key(next_incident.fp, next_incident.open_bucket),
+          "1", core.open_request_marker_ttl_seconds())
+      end
+    end
+    -- raise() is a best-effort derived fact. Re-emit the same idempotent open
+    -- request whenever the short-lived emission marker expires so a process
+    -- exit between cache_set and the authenticated raise frame cannot suppress
+    -- filing for the incident's full lifetime. issue-proxy/GitHub remain the
+    -- durable duplicate boundary.
+    local open_marker = core.open_request_marker_key(
+      next_incident.fp, next_incident.open_bucket)
+    local open_marker_value = cache_get(open_marker)
+    if fired and next_incident.state == "open"
+      and (open_marker_value == nil or open_marker_value == "") then
+      raise_issue("open", next_incident, candidate, snapshot, cfg)
+      cache_set(open_marker, "1", core.open_request_marker_ttl_seconds())
     end
     if next_incident.state == "none" then
       cache_set(core.incident_cache_key(segment), "", 1)
+    elseif next_incident.state == "closed" then
+      -- Closed generations are no longer active work and must not occupy the
+      -- bounded scan index forever. Keep their state for the normal TTL so a
+      -- refire can start a new generation without refreshing it every tick.
+      if from_state ~= "closed" then
+        cache_set(core.incident_cache_key(segment), core.encode_incident(next_incident),
+          core.incident_ttl_seconds())
+      end
     else
       cache_set(core.incident_cache_key(segment), core.encode_incident(next_incident),
         core.incident_ttl_seconds())
@@ -265,21 +258,32 @@ local function scan(event)
   local cfg = detector_config()
   cfg.reference_epoch = now()
   local snapshot_path = root .. "/aevatar-events.jsonl"
-  local ok, content = pcall(file.read, snapshot_path)
+  local ok, content
+  with_lock(core.aevatar_snapshot_lock_key(), function()
+    ok, content = pcall(file.read, snapshot_path)
+  end)
+  local records = {}
   if not ok or content == nil or content == "" then
-    log.info("stability-sentinel dept=detect SKIP empty-snapshot path=" .. snapshot_path)
-    return
-  end
-  local records = core.parse_jsonl(content)
-  if #records == 0 then
-    log.info("stability-sentinel dept=detect SKIP no-records path=" .. snapshot_path)
-    return
+    log.info("stability-sentinel dept=detect aevatar-snapshot-unavailable path=" .. snapshot_path)
+  else
+    local parsed, parse_error = core.parse_snapshot_jsonl(content)
+    if parsed == nil then
+      log.warn("stability-sentinel dept=detect invalid-aevatar-snapshot path=" .. snapshot_path
+        .. " reason=" .. tostring(parse_error))
+    else
+      records = parsed
+      if #records == 0 then
+        log.info("stability-sentinel dept=detect aevatar-snapshot-empty path=" .. snapshot_path)
+      end
+    end
   end
   local snapshot = core.build_snapshot(records, cfg.bucket_minutes)
-  if snapshot.covered_last == nil then
-    log.info("stability-sentinel dept=detect SKIP no-timestamps path=" .. snapshot_path)
-    return
+  if #records > 0 and snapshot.covered_last == nil then
+    log.warn("stability-sentinel dept=detect aevatar-snapshot-has-no-timestamps path=" .. snapshot_path)
   end
+
+  -- Pipeline dead letters are an independent source. They must remain
+  -- observable when Aevatar polling itself is failing and no snapshot exists.
   local dl_text, dl_degraded = dead_letter_text(root)
   snapshot.dead_letter_degraded = dl_degraded
   core.add_dead_letter_groups(snapshot, core.parse_dead_letter_lines(dl_text))

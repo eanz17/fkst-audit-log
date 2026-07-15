@@ -4,3 +4,9 @@ persistence_class = "stateless_adapter"
 
 [code]
 root = "."
+
+[lib_deps]
+libraries = ["audit_shared"]
+
+[dependency_constraints]
+allowed_lib_deps = ["audit_shared"]

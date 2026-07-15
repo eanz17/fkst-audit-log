@@ -1,6 +1,20 @@
 [workspace]
-units = ["packages/*"]
-packages = ["packages/*"]
+units = [
+  "packages/audit-watcher",
+  "packages/audit-analyzer",
+  "packages/alert-proxy",
+  "packages/stability-sentinel",
+  "packages/issue-proxy",
+  "libraries/audit_shared",
+]
+packages = [
+  "packages/audit-watcher",
+  "packages/audit-analyzer",
+  "packages/alert-proxy",
+  "packages/stability-sentinel",
+  "packages/issue-proxy",
+]
+libraries = ["libraries/audit_shared"]
 
 [registries]
 workspace = "workspace"
@@ -27,15 +41,5 @@ version = "workspace"
 
 [[package]]
 name = "issue-proxy"
-source = "workspace"
-version = "workspace"
-
-[[package]]
-name = "issue-watcher"
-source = "workspace"
-version = "workspace"
-
-[[package]]
-name = "issue-solver"
 source = "workspace"
 version = "workspace"

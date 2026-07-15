@@ -81,10 +81,12 @@ interface AevatarPoll {
 // real GitHub writes are on is the single most important fact on the 稳定性 tab.
 interface IssuePosture {
   write: boolean;
-  repo: string;
+  aevatarRepo: string;
+  pipelineRepo: string;
   transport: string;
   autoclose: boolean;
   detectEnabled: boolean;
+  devloopConfigured: boolean;
 }
 
 interface DashboardPayload {
@@ -102,7 +104,6 @@ interface DashboardPayload {
     maxRecords: number;
     maxPagesPerTick: number;
     lookbackHours: number;
-    sliceMinutes: number;
     scope: string;
   };
   aevatarPoll: AevatarPoll;
@@ -147,6 +148,9 @@ const envKeys = [
   // secrets look like, which is exactly what a read-only dashboard must not leak.
   'FKST_ISSUE_WRITE',
   'FKST_ISSUE_REPO',
+  'FKST_AEVATAR_ISSUE_REPO',
+  'FKST_PIPELINE_ISSUE_REPO',
+  'FKST_AEVATAR_DEVLOOP_ENABLED',
   'FKST_ISSUE_TRANSPORT',
   'FKST_ISSUE_AUTOCLOSE',
   'FKST_ISSUE_MAX_PER_DAY',
@@ -159,7 +163,6 @@ const envKeys = [
   'AEVATAR_AUDIT_MAX_RECORDS',
   'AEVATAR_AUDIT_MAX_PAGES_PER_TICK',
   'AEVATAR_AUDIT_LOOKBACK_HOURS',
-  'AEVATAR_AUDIT_SLICE_MINUTES',
   'AEVATAR_AUDIT_SCOPE',
   'AEVATAR_AUDIT_ACTOR_ID',
   'AEVATAR_AUDIT_IDENTITY_KEY_ID',
@@ -194,9 +197,12 @@ function defaultFor(key: string): string | undefined {
     AUDIT_ALERT_MIN_SEVERITY: 'high',
     FKST_ISSUE_WRITE: '0',
     FKST_ISSUE_REPO: 'eanz17/fkst-audit-log',
+    FKST_AEVATAR_ISSUE_REPO: 'aevatarAI/aevatar',
+    FKST_PIPELINE_ISSUE_REPO: 'eanz17/fkst-audit-log',
+    FKST_AEVATAR_DEVLOOP_ENABLED: '0',
     FKST_ISSUE_TRANSPORT: 'gh',
-    FKST_ISSUE_AUTOCLOSE: '1',
-    FKST_ISSUE_MAX_PER_DAY: '5',
+    FKST_ISSUE_AUTOCLOSE: '0',
+    FKST_ISSUE_MAX_PER_DAY: '1',
     FKST_ISSUE_MAX_OPEN: '10',
     STABILITY_DETECT_ENABLED: '0',
     AEVATAR_AUDIT_ENABLED: '1',
@@ -205,8 +211,7 @@ function defaultFor(key: string): string | undefined {
     AEVATAR_AUDIT_TAKE: '500',
     AEVATAR_AUDIT_MAX_RECORDS: '1000',
     AEVATAR_AUDIT_MAX_PAGES_PER_TICK: '12',
-    AEVATAR_AUDIT_LOOKBACK_HOURS: '2',
-    AEVATAR_AUDIT_SLICE_MINUTES: '10'
+    AEVATAR_AUDIT_LOOKBACK_HOURS: '2'
   };
   return defaults[key];
 }
@@ -722,7 +727,6 @@ async function dashboardPayload(): Promise<DashboardPayload> {
       maxRecords: Number(process.env.AEVATAR_AUDIT_MAX_RECORDS || 1000),
       maxPagesPerTick: Number(process.env.AEVATAR_AUDIT_MAX_PAGES_PER_TICK || 12),
       lookbackHours: Number(process.env.AEVATAR_AUDIT_LOOKBACK_HOURS || 2),
-      sliceMinutes: Number(process.env.AEVATAR_AUDIT_SLICE_MINUTES || 10),
       scope: process.env.AEVATAR_AUDIT_SCOPE || ''
     },
     aevatarPoll,
@@ -736,10 +740,12 @@ async function dashboardPayload(): Promise<DashboardPayload> {
     issueActions,
     issuePosture: {
       write: process.env.FKST_ISSUE_WRITE === '1',
-      repo: process.env.FKST_ISSUE_REPO || 'eanz17/fkst-audit-log',
+      aevatarRepo: process.env.FKST_AEVATAR_ISSUE_REPO || 'aevatarAI/aevatar',
+      pipelineRepo: process.env.FKST_PIPELINE_ISSUE_REPO || 'eanz17/fkst-audit-log',
       transport: process.env.FKST_ISSUE_TRANSPORT || 'gh',
-      autoclose: (process.env.FKST_ISSUE_AUTOCLOSE ?? '1') === '1',
-      detectEnabled: process.env.STABILITY_DETECT_ENABLED === '1'
+      autoclose: (process.env.FKST_ISSUE_AUTOCLOSE ?? '0') === '1',
+      detectEnabled: process.env.STABILITY_DETECT_ENABLED === '1',
+      devloopConfigured: process.env.FKST_AEVATAR_DEVLOOP_ENABLED === '1'
     },
     config: configItems()
   };

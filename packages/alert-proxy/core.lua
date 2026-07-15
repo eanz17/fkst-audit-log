@@ -1,3 +1,5 @@
+local audit_digest = require("audit_shared.digest")
+
 local M = {}
 
 local severity_values = { critical = true, high = true, medium = true, low = true }
@@ -11,6 +13,7 @@ local limits = {
   dedup_key = 512,
 }
 local sent_marker_ttl_seconds = 24 * 60 * 60
+local issue_filed_sent_marker_ttl_seconds = 31 * 24 * 60 * 60
 -- Fields the Lark card renders explicitly (title / body blocks / footer);
 -- anything else in the payload is appended as an extra block so new fields
 -- are never silently dropped.
@@ -34,6 +37,10 @@ local severity_labels = {
 
 function M.sent_marker_ttl_seconds()
   return sent_marker_ttl_seconds
+end
+
+function M.issue_filed_sent_marker_ttl_seconds()
+  return issue_filed_sent_marker_ttl_seconds
 end
 
 function M.checksum(text)
@@ -70,6 +77,15 @@ local function bounded(value, limit)
   return type(value) == "string" and value ~= "" and #value <= limit
 end
 
+local function valid_repo(repo)
+  if type(repo) ~= "string" or #repo > 140 then
+    return false
+  end
+  local owner, name = repo:match("^([%w._-]+)/([%w._-]+)$")
+  return owner ~= nil and owner ~= "." and owner ~= ".."
+    and name ~= "." and name ~= ".."
+end
+
 -- Returns nil on success, or an error-class string naming the first invalid
 -- field. Alerts are outbound writes; malformed requests fail closed.
 function M.validate_alert(payload)
@@ -87,7 +103,68 @@ function M.validate_alert(payload)
       return "invalid-" .. field
     end
   end
+  if payload.category == "issue-filed" and M.issue_filed_delivery_ack(payload) == nil then
+    return "invalid-issue-filed-alert"
+  end
   return nil
+end
+
+function M.issue_filed_delivery_ack(payload)
+  if type(payload) ~= "table" or payload.category ~= "issue-filed"
+    or not valid_repo(payload.repo)
+    or type(payload.issue_number) ~= "string" then
+    return nil
+  end
+  local number = tonumber(payload.issue_number)
+  if number == nil or number < 1 or number % 1 ~= 0
+    or tostring(math.floor(number)) ~= payload.issue_number then
+    return nil
+  end
+  local canonical_dedup = "issue-alert/issue-filed/" .. payload.repo
+    .. "/" .. payload.issue_number
+  local canonical_url = "https://github.com/" .. payload.repo
+    .. "/issues/" .. payload.issue_number
+  if payload.dedup_key ~= canonical_dedup
+    or payload.issue_url ~= canonical_url
+    or payload.source_path ~= canonical_url then
+    return nil
+  end
+  return {
+    schema = "alert-proxy.delivery-ack.v1",
+    kind = "issue-filed",
+    repo = payload.repo,
+    issue_number = payload.issue_number,
+    dedup_key = payload.dedup_key,
+  }
+end
+
+-- Lark's message uuid is its downstream idempotency boundary. Keep it scoped
+-- to issue-filed alerts: the same durable outbox delivery must reuse this value
+-- even when the first POST succeeded but its response or local marker was lost.
+function M.issue_filed_lark_uuid(payload)
+  local delivery_ack = M.issue_filed_delivery_ack(payload)
+  if delivery_ack == nil then
+    return nil
+  end
+  local digest = audit_digest.sha256_hex(
+    "fkst:lark:issue-filed:v1\31" .. delivery_ack.dedup_key)
+  -- RFC 9562 version 8 leaves the payload semantics application-defined.
+  return digest:sub(1, 8) .. "-" .. digest:sub(9, 12)
+    .. "-8" .. digest:sub(14, 16)
+    .. "-a" .. digest:sub(18, 20)
+    .. "-" .. digest:sub(21, 32)
+end
+
+function M.parse_lark_success_response(stdout)
+  local ok, response = pcall(json.decode, tostring(stdout or ""))
+  if not ok or type(response) ~= "table"
+    or type(response.code) ~= "number" or response.code ~= 0
+    or type(response.data) ~= "table"
+    or type(response.data.message_id) ~= "string"
+    or response.data.message_id == "" then
+    return nil
+  end
+  return response
 end
 
 -- Minimal JSON string escaping for the webhook body (the SDK has no
@@ -179,9 +256,13 @@ function M.render_lark_card_content(payload)
 end
 
 function M.render_lark_message_body(payload, receive_id)
+  local uuid = M.issue_filed_lark_uuid(payload)
+  local uuid_field = uuid ~= nil
+    and ',"uuid":"' .. M.json_escape(uuid) .. '"' or ""
   return '{"receive_id":"' .. M.json_escape(receive_id) .. '",'
     .. '"msg_type":"interactive",'
-    .. '"content":"' .. M.json_escape(M.render_lark_card_content(payload)) .. '"}'
+    .. '"content":"' .. M.json_escape(M.render_lark_card_content(payload)) .. '"'
+    .. uuid_field .. "}"
 end
 
 function M.is_success_status(stdout)

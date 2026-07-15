@@ -118,6 +118,62 @@ local function tick(overrides)
 end
 
 return {
+  test_event_evidence_keeps_safe_trace_and_diagnostic_fields = function()
+    local line = core.render_event_line({
+      id = "connection-1:request-42:event",
+      scopeId = "scope-a",
+      auditActorId = "actor-a",
+      action = "identity.login.finalize",
+      outcome = "Error",
+      occurredAtUtc = "2026-07-14T08:00:00Z",
+      resourceType = "external_identity_binding",
+      resourceId = "login-finalize",
+      correlationId = "connection-1:request-42",
+      errorCode = "token_exchange_failed",
+      stage = "token_exchange",
+      httpStatus = 502,
+      dependency = "nyxid",
+      componentOwner = "identity-team",
+    })
+    t.is_true(line:find("resource=external_identity_binding/login-finalize", 1, true) ~= nil)
+    t.is_true(line:find("correlation=connection-1:request-42", 1, true) ~= nil)
+    t.is_true(line:find("trace_ref=cr-", 1, true) ~= nil)
+    t.is_true(line:find("error_code=token_exchange_failed", 1, true) ~= nil)
+    t.is_true(line:find("stage=token_exchange", 1, true) ~= nil)
+    t.is_true(line:find("http_status=502", 1, true) ~= nil)
+    t.is_true(line:find("dependency=nyxid", 1, true) ~= nil)
+    t.is_true(line:find("owner=identity-team", 1, true) ~= nil)
+  end,
+
+  test_incident_index_fails_closed_instead_of_evicting_active_items = function()
+    local segments = {}
+    for index = 1, core.index_limit() + 1 do
+      table.insert(segments, "segment-" .. tostring(index))
+    end
+    t.raises(function()
+      core.encode_index(segments)
+    end)
+  end,
+
+  test_snapshot_jsonl_parser_requires_complete_atomic_shape = function()
+    local line = '{"id":"audit-1","occurredAtUtc":"2026-07-13T09:00:00Z"}'
+    local records, err = core.parse_snapshot_jsonl(line .. "\n")
+    t.eq(#records, 1)
+    t.is_nil(err)
+
+    local partial, partial_err = core.parse_snapshot_jsonl(line)
+    t.is_nil(partial)
+    t.eq(partial_err, "unterminated-line")
+
+    local malformed, malformed_err = core.parse_snapshot_jsonl(line .. "\n{" .. "\n")
+    t.is_nil(malformed)
+    t.eq(malformed_err, "invalid-json-line-2")
+  end,
+
+  test_snapshot_lock_key_matches_watcher_contract = function()
+    t.eq(core.aevatar_snapshot_lock_key(), "fkst-audit-log/aevatar-events-snapshot")
+  end,
+
   test_outcome_normalization_accepts_pascal_case = function()
     t.eq(core.outcome_is_failure("Accepted", "workflow.run.completed"), false)
     t.eq(core.outcome_is_failure("Success", "workflow.run.completed"), false)
@@ -545,6 +601,9 @@ return {
       "stability-issue/comment/0badc0de/2026-07-13T0900/82345")
     t.eq(core.close_dedup_key("0badc0de", "2026-07-13T0900"),
       "stability-issue/close/0badc0de/2026-07-13T0900")
+    t.eq(core.open_request_marker_key("0badc0de", "2026-07-13T0900"),
+      "stability-sentinel/open-request/0badc0de/2026-07-13T0900")
+    t.eq(core.open_request_marker_ttl_seconds(), 10 * 60)
     t.eq(core.incident_id("0badc0de", "2026-07-13T0900"), "0badc0de-2026-07-13T0900")
     -- Cooldown bucket: 6h granularity over epoch seconds.
     t.eq(core.cooldown_bucket(6 * 3600, 6), 1)

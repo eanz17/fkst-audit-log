@@ -31,7 +31,9 @@ return {
     t.eq(alert.severity, "high")
     t.eq(alert.category, "issue-filing-dead-letter")
     t.is_true(alert.summary:find("gh-issue-create-failed", 1, true) ~= nil)
+    t.is_true(alert.summary:find("不能据此断言 issue 不存在", 1, true) ~= nil)
     t.is_true(alert.evidence:find("provider-unavailable", 1, true) ~= nil)
+    t.is_true(alert.action:find("provenance/fingerprint", 1, true) ~= nil)
     t.is_true(alert.dedup_key:find("issue-alert/issue-filing-dead-letter/", 1, true) == 1)
   end,
 

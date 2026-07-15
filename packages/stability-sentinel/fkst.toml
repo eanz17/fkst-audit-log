@@ -7,3 +7,6 @@ root = "."
 
 [event_deps]
 packages = ["issue-proxy"]
+
+[lib_deps]
+libraries = ["audit_shared"]

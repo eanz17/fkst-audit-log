@@ -13,40 +13,48 @@
 #   ALERT_DELIVERY_MODE=webhook FKST_ALERT_WRITE=1 ALERT_WEBHOOK_URL=https://hooks.example/... ./boot.sh
 
 set -eu
+umask 077
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$ROOT"
+
+# Load host-local defaults. Explicit values from the calling process retain
+# precedence; the child runner and web adapter skip a second source pass.
+. "$ROOT/scripts/secure-profile.sh"
+if [ "${FKST_SKIP_ENV_FILE:-0}" != "1" ]; then
+  fkst_load_secure_profile_defaults "$ROOT/.fkst/env"
+fi
 
 export BIN="${BIN:-$ROOT/../fkst-substrate/target/debug/fkst-framework}"
 export FKST_RUNTIME_ROOT="${FKST_RUNTIME_ROOT:-$ROOT/.fkst/run/runtime}"
 export FKST_DURABLE_ROOT="${FKST_DURABLE_ROOT:-$ROOT/.fkst/run/durable}"
 
-# Keep this script authoritative for env defaults. Set FKST_SKIP_ENV_FILE=0 if
-# you intentionally want scripts/run.sh to source .fkst/env afterwards.
-export FKST_SKIP_ENV_FILE="${FKST_SKIP_ENV_FILE:-1}"
+export FKST_SKIP_ENV_FILE=1
 
-# Alerting sends real Lark cards by default. Set FKST_ALERT_WRITE=0 for dry-run.
-export FKST_ALERT_WRITE="${FKST_ALERT_WRITE:-1}"
+# Outbound writes require an explicit host-local opt-in.
+export FKST_ALERT_WRITE="${FKST_ALERT_WRITE:-0}"
 export ALERT_DELIVERY_MODE="${ALERT_DELIVERY_MODE:-lark}"
 export NYXID_URL="${NYXID_URL:-https://nyx.chrono-ai.fun}"
-export ALERT_LARK_NYXID_SERVICE="${ALERT_LARK_NYXID_SERVICE:-api-lark-bot-7}"
-export ALERT_LARK_CHAT_ID="${ALERT_LARK_CHAT_ID:-oc_f10274a38c354472507026f0695fb840}"
+export ALERT_LARK_NYXID_SERVICE="${ALERT_LARK_NYXID_SERVICE:-api-lark-bot}"
+export ALERT_LARK_CHAT_ID="${ALERT_LARK_CHAT_ID:-}"
 export ALERT_WEBHOOK_URL="${ALERT_WEBHOOK_URL:-}"
 export ALERT_WEBHOOK_URL_CRITICAL="${ALERT_WEBHOOK_URL_CRITICAL:-}"
 export ALERT_FALLBACK_WEBHOOK_URL="${ALERT_FALLBACK_WEBHOOK_URL:-}"
 export AUDIT_ALERT_MIN_SEVERITY="${AUDIT_ALERT_MIN_SEVERITY:-high}"
+export AUDIT_ANALYZER_CODEX_ENABLED="${AUDIT_ANALYZER_CODEX_ENABLED:-0}"
 
 # Instability detection + auto GitHub issue filing.
-# FKST_ISSUE_WRITE deliberately defaults to 0, UNLIKE FKST_ALERT_WRITE above:
-# creating GitHub artifacts on a public repo is a higher-stakes write than a
-# chat message. Keep 0 until the dry-run burn-in looks clean; do NOT flip this
-# default "for consistency".
+# Creating GitHub artifacts on a public repo is a high-stakes write. Keep the
+# checked-in default at 0 and opt in only through host-local configuration.
 export STABILITY_DETECT_ENABLED="${STABILITY_DETECT_ENABLED:-1}"
 export FKST_ISSUE_WRITE="${FKST_ISSUE_WRITE:-0}"
-export FKST_ISSUE_REPO="${FKST_ISSUE_REPO:-eanz17/fkst-audit-log}"
+export FKST_AEVATAR_ISSUE_REPO="${FKST_AEVATAR_ISSUE_REPO:-aevatarAI/aevatar}"
+export FKST_PIPELINE_ISSUE_REPO="${FKST_PIPELINE_ISSUE_REPO:-eanz17/fkst-audit-log}"
+export FKST_ISSUE_REPO="${FKST_ISSUE_REPO:-$FKST_PIPELINE_ISSUE_REPO}"
 export FKST_ISSUE_TRANSPORT="${FKST_ISSUE_TRANSPORT:-gh}"
-export FKST_ISSUE_AUTOCLOSE="${FKST_ISSUE_AUTOCLOSE:-1}"
-export FKST_ISSUE_MAX_PER_DAY="${FKST_ISSUE_MAX_PER_DAY:-5}"
+export FKST_ISSUE_AUTOCLOSE="${FKST_ISSUE_AUTOCLOSE:-0}"
+export FKST_ISSUE_CLOSE_ON_DROP="${FKST_ISSUE_CLOSE_ON_DROP:-0}"
+export FKST_ISSUE_MAX_PER_DAY="${FKST_ISSUE_MAX_PER_DAY:-1}"
 export FKST_ISSUE_MAX_OPEN="${FKST_ISSUE_MAX_OPEN:-10}"
 
 # Aevatar audit trail polling.
@@ -57,8 +65,7 @@ export AEVATAR_AUDIT_TAKE="${AEVATAR_AUDIT_TAKE:-500}"
 export AEVATAR_AUDIT_MAX_RECORDS="${AEVATAR_AUDIT_MAX_RECORDS:-1000}"
 export AEVATAR_AUDIT_MAX_PAGES_PER_TICK="${AEVATAR_AUDIT_MAX_PAGES_PER_TICK:-12}"
 export AEVATAR_AUDIT_LOOKBACK_HOURS="${AEVATAR_AUDIT_LOOKBACK_HOURS:-2}"
-export AEVATAR_AUDIT_SLICE_MINUTES="${AEVATAR_AUDIT_SLICE_MINUTES:-10}"
-export AEVATAR_AUDIT_SCOPE="${AEVATAR_AUDIT_SCOPE:-__all__}"
+export AEVATAR_AUDIT_SCOPE="${AEVATAR_AUDIT_SCOPE:-}"
 export AEVATAR_AUDIT_ACTOR_ID="${AEVATAR_AUDIT_ACTOR_ID:-}"
 export AEVATAR_AUDIT_IDENTITY_KEY_ID="${AEVATAR_AUDIT_IDENTITY_KEY_ID:-}"
 export AEVATAR_AUDIT_FROM="${AEVATAR_AUDIT_FROM:-}"
@@ -113,17 +120,20 @@ resolve_codex_bin() {
   return 1
 }
 
-CODEX_BIN=$(resolve_codex_bin || true)
-if [ -z "$CODEX_BIN" ]; then
-  echo "codex CLI is required for audit analysis; install it or set FKST_CODEX_BIN" >&2
-  exit 2
+CODEX_BIN="disabled"
+if [ "$AUDIT_ANALYZER_CODEX_ENABLED" = "1" ]; then
+  CODEX_BIN=$(resolve_codex_bin || true)
+  if [ -z "$CODEX_BIN" ]; then
+    echo "codex CLI is required when AUDIT_ANALYZER_CODEX_ENABLED=1; install it or set FKST_CODEX_BIN" >&2
+    exit 2
+  fi
+  if [ "$(basename "$CODEX_BIN")" != "codex" ] || ! "$CODEX_BIN" --version >/dev/null 2>&1; then
+    echo "codex CLI is not runnable: $CODEX_BIN" >&2
+    exit 2
+  fi
+  PATH="$(dirname "$CODEX_BIN"):$PATH"
+  export PATH
 fi
-if [ "$(basename "$CODEX_BIN")" != "codex" ] || ! "$CODEX_BIN" --version >/dev/null 2>&1; then
-  echo "codex CLI is not runnable: $CODEX_BIN" >&2
-  exit 2
-fi
-PATH="$(dirname "$CODEX_BIN"):$PATH"
-export PATH
 
 if [ "$AEVATAR_AUDIT_ENABLED" = "1" ] && ! command -v nyxid >/dev/null 2>&1; then
   echo "nyxid CLI is required when AEVATAR_AUDIT_ENABLED=1" >&2
@@ -143,6 +153,7 @@ elif [ "$STABILITY_DETECT_ENABLED" = "1" ] && ! command -v gh >/dev/null 2>&1; t
 fi
 
 mkdir -p "$FKST_RUNTIME_ROOT" "$FKST_DURABLE_ROOT" "$ROOT/watch"
+chmod 700 "$ROOT/.fkst" "$ROOT/.fkst/run" "$FKST_RUNTIME_ROOT" "$FKST_DURABLE_ROOT" "$ROOT/watch" 2>/dev/null || true
 
 # A previous boot can leave the Vite or adapter process behind. Clear only the
 # configured listening ports before starting the web layer so a new boot can
@@ -204,7 +215,7 @@ echo "  runtime:  $FKST_RUNTIME_ROOT"
 echo "  durable:  $FKST_DURABLE_ROOT"
 echo "  bin:      $BIN"
 echo "  codex:    $CODEX_BIN"
-echo "  aevatar:  enabled=$AEVATAR_AUDIT_ENABLED service=$AEVATAR_AUDIT_NYXID_SERVICE path=$AEVATAR_AUDIT_PATH take=$AEVATAR_AUDIT_TAKE max_records=$AEVATAR_AUDIT_MAX_RECORDS max_pages=$AEVATAR_AUDIT_MAX_PAGES_PER_TICK lookback=${AEVATAR_AUDIT_LOOKBACK_HOURS}h slice=${AEVATAR_AUDIT_SLICE_MINUTES}m"
+echo "  aevatar:  enabled=$AEVATAR_AUDIT_ENABLED service=$AEVATAR_AUDIT_NYXID_SERVICE path=$AEVATAR_AUDIT_PATH take=$AEVATAR_AUDIT_TAKE max_records=$AEVATAR_AUDIT_MAX_RECORDS max_pages=$AEVATAR_AUDIT_MAX_PAGES_PER_TICK lookback=${AEVATAR_AUDIT_LOOKBACK_HOURS}h"
 if [ -n "$AEVATAR_AUDIT_SCOPE" ]; then
   echo "  scope:    $AEVATAR_AUDIT_SCOPE"
 fi
@@ -213,10 +224,17 @@ if [ "$FKST_ALERT_WRITE" = "1" ]; then
 else
   echo "  alerts:   dry-run mode=$ALERT_DELIVERY_MODE"
 fi
-if [ "$FKST_ISSUE_WRITE" = "1" ]; then
-  echo "  issues:   REAL repo=$FKST_ISSUE_REPO transport=$FKST_ISSUE_TRANSPORT autoclose=$FKST_ISSUE_AUTOCLOSE detect=$STABILITY_DETECT_ENABLED"
+if [ "$FKST_ISSUE_WRITE" = "1" ] && [ "$FKST_ALERT_WRITE" = "1" ]; then
+  echo "  filed:    REAL mode=$ALERT_DELIVERY_MODE (durable outbox; clear on delivery ACK)"
+elif [ "$FKST_ISSUE_WRITE" = "1" ]; then
+  echo "  filed:    held in durable outbox until FKST_ALERT_WRITE=1"
 else
-  echo "  issues:   dry-run repo=$FKST_ISSUE_REPO detect=$STABILITY_DETECT_ENABLED (set FKST_ISSUE_WRITE=1 for real GitHub issues)"
+  echo "  filed:    inactive while issue writes are dry-run"
+fi
+if [ "$FKST_ISSUE_WRITE" = "1" ]; then
+  echo "  issues:   REAL aevatar=$FKST_AEVATAR_ISSUE_REPO pipeline=$FKST_PIPELINE_ISSUE_REPO transport=$FKST_ISSUE_TRANSPORT autoclose=$FKST_ISSUE_AUTOCLOSE close_on_drop=$FKST_ISSUE_CLOSE_ON_DROP detect=$STABILITY_DETECT_ENABLED"
+else
+  echo "  issues:   dry-run aevatar=$FKST_AEVATAR_ISSUE_REPO pipeline=$FKST_PIPELINE_ISSUE_REPO detect=$STABILITY_DETECT_ENABLED (set FKST_ISSUE_WRITE=1 for real GitHub issues)"
 fi
 if [ "$FKST_WEB" = "1" ]; then
   echo "  web:      http://127.0.0.1:$FKST_WEB_PORT (adapter :$FKST_WEB_API_PORT)"

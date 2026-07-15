@@ -85,10 +85,12 @@ export interface IssueAction {
 
 export interface IssuePosture {
   write: boolean;
-  repo: string;
+  aevatarRepo: string;
+  pipelineRepo: string;
   transport: string;
   autoclose: boolean;
   detectEnabled: boolean;
+  devloopConfigured: boolean;
 }
 
 export interface ConfigItem {
@@ -120,7 +122,6 @@ export interface DashboardPayload {
     maxRecords: number;
     maxPagesPerTick: number;
     lookbackHours: number;
-    sliceMinutes: number;
     scope: string;
   };
   aevatarPoll: AevatarPoll;

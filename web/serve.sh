@@ -16,6 +16,7 @@
 #   FKST_WEB_API_PORT   adapter port (default 5174)
 #   FKST_REPO_ROOT      repo root the adapter reads (default: auto-detected)
 set -eu
+umask 077
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$ROOT"
@@ -25,11 +26,10 @@ REPO_ROOT=$(CDPATH= cd -- "$ROOT/.." && pwd)
 # scripts/run.sh would use so the dashboard reports the same alert posture as
 # the engine. boot.sh sets FKST_SKIP_ENV_FILE=1 and exports authoritative values,
 # so this does not override an intentional boot.sh dry-run.
-if [ "${FKST_SKIP_ENV_FILE:-}" != "1" ] && [ -f "$REPO_ROOT/.fkst/env" ]; then
-  set -a
+if [ "${FKST_SKIP_ENV_FILE:-}" != "1" ]; then
   # shellcheck disable=SC1091
-  . "$REPO_ROOT/.fkst/env"
-  set +a
+  . "$REPO_ROOT/scripts/secure-profile.sh"
+  fkst_load_secure_profile_defaults "$REPO_ROOT/.fkst/env"
 fi
 export FKST_REPO_ROOT="${FKST_REPO_ROOT:-$REPO_ROOT}"
 
@@ -55,6 +55,20 @@ export FKST_WEB_PORT="$UI_PORT"
 
 ADAPTER_PID=""
 VITE_PID=""
+WEB_LOG_DIR="${FKST_WEB_LOG_DIR:-$REPO_ROOT/.fkst/run/web}"
+if [ -L "$WEB_LOG_DIR" ]; then
+  echo "serve: refusing symlink web log directory: $WEB_LOG_DIR" >&2
+  exit 2
+fi
+mkdir -p "$WEB_LOG_DIR"
+if [ ! -d "$WEB_LOG_DIR" ] || [ -L "$WEB_LOG_DIR" ]; then
+  echo "serve: web log path is not a private directory: $WEB_LOG_DIR" >&2
+  exit 2
+fi
+chmod 700 "$WEB_LOG_DIR"
+# BSD mktemp (macOS) requires the XXXXXX suffix at the end of the template.
+ADAPTER_LOG=$(mktemp "$WEB_LOG_DIR/adapter.log.XXXXXX")
+chmod 600 "$ADAPTER_LOG"
 cleanup() {
   trap - EXIT HUP INT TERM
   [ -n "$VITE_PID" ] && kill "$VITE_PID" 2>/dev/null || true
@@ -63,15 +77,15 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 # Start the adapter first; the UI proxies /api to it.
-npm run adapter >/tmp/fkst-web-adapter.log 2>&1 &
+npm run adapter >"$ADAPTER_LOG" 2>&1 &
 ADAPTER_PID=$!
 
 i=0
 adapter_ready=0
 while [ "$i" -lt 40 ]; do
   if ! kill -0 "$ADAPTER_PID" 2>/dev/null; then
-    echo "serve: adapter exited early; see /tmp/fkst-web-adapter.log" >&2
-    cat /tmp/fkst-web-adapter.log >&2 || true
+    echo "serve: adapter exited early; see $ADAPTER_LOG" >&2
+    cat "$ADAPTER_LOG" >&2 || true
     exit 1
   fi
   if curl -sS -o /dev/null "http://127.0.0.1:${API_PORT}/api/health" 2>/dev/null; then
@@ -83,7 +97,7 @@ while [ "$i" -lt 40 ]; do
   sleep 0.25
 done
 if [ "$adapter_ready" != "1" ]; then
-  echo "serve: adapter health check timed out; see /tmp/fkst-web-adapter.log" >&2
+  echo "serve: adapter health check timed out; see $ADAPTER_LOG" >&2
   exit 1
 fi
 
