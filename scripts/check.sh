@@ -11,8 +11,10 @@ if [ -z "${FKST_PYTHON:-}" ] && [ -f "$ROOT/.fkst/aevatar-devloop.env" ]; then
 fi
 
 echo "== syntax and launcher contracts =="
-sh -n boot.sh scripts/run.sh scripts/secure-profile.sh web/serve.sh
-bash -n scripts/aevatar-devloop.sh scripts/aevatar-devloop_test.sh scripts/check.sh
+sh -n boot.sh scripts/run.sh scripts/secure-profile.sh \
+  scripts/aevatar-audit-preflight.sh web/serve.sh
+bash -n scripts/aevatar-audit-preflight_test.sh \
+  scripts/aevatar-devloop.sh scripts/aevatar-devloop_test.sh scripts/check.sh
 
 profile_test_root="$(mktemp -d "${TMPDIR:-/tmp}/fkst-profile-test.XXXXXX")"
 trap 'rm -rf "$profile_test_root"' EXIT
@@ -49,6 +51,7 @@ if ( . "$ROOT/scripts/secure-profile.sh"; fkst_load_secure_profile "$profile_tes
   echo "FAIL: secure profile loader accepted a symlink" >&2
   exit 1
 fi
+scripts/aevatar-audit-preflight_test.sh
 scripts/aevatar-devloop_test.sh
 
 echo "== fkst conformance and Lua tests =="

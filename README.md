@@ -766,6 +766,8 @@ AEVATAR_AUDIT_TO=
 
 `scope=__all__` 需要当前 NyxID/Aevatar 身份有 Aevatar admin 权限。若只看单个默认 scope,可把 `AEVATAR_AUDIT_SCOPE` 留空。
 
+`boot.sh` 对 `scope=__all__` 执行只读 `take=1` 预检;NyxID HTTP 错误、空响应或非 JSON 响应都会在 supervisor/web 启动前 fail closed。当前 Aevatar 跨 scope 管理员校验仍要求标准 Bearer,因此 NyxID service 必须启用可被 Aevatar 接受的 access-token forwarding;仅有 Identity/Delegation header 不足。本仓库不会自动修改 NyxID service,也不会降级到单 scope。已运行的 supervisor 必须重启后才会经过该启动门禁。
+
 启动:
 
 ```sh
@@ -871,7 +873,7 @@ scripts/run.sh run audit-watcher collect \
 | `AEVATAR_AUDIT_MAX_RECORDS` | `1000` | 每次 cron 最多处理的 audit 记录数 |
 | `AEVATAR_AUDIT_MAX_PAGES_PER_TICK` | `12` | 每次 cron 最多请求页数;未耗尽时持久化 cursor,下一 tick 续读同一固定窗口 |
 | `AEVATAR_AUDIT_LOOKBACK_HOURS` | `2` | 未设置 `AEVATAR_AUDIT_FROM` 时首个查询的回看范围;之后由 query watermark 推进 |
-| `AEVATAR_AUDIT_SCOPE` | —(未设置只查默认 scope) | 可选 scope;`__all__` 跨 scope 监控需要 Aevatar admin |
+| `AEVATAR_AUDIT_SCOPE` | —(未设置只查默认 scope) | 可选 scope;`__all__` 跨 scope 监控需要 Aevatar admin,且 NyxID route 必须转发 Aevatar 可接受的 Bearer;启动预检失败时不降级 |
 | `AEVATAR_AUDIT_ACTOR_ID` | — | 可选 audit actor 过滤 |
 | `AEVATAR_AUDIT_IDENTITY_KEY_ID` | — | 可选 identity key 过滤 |
 | `AEVATAR_AUDIT_FROM` / `AEVATAR_AUDIT_TO` | — | 可选初始下界/固定上界;未设 `TO` 时每个新查询取当前 tick,cursor 存续期间两者不变 |

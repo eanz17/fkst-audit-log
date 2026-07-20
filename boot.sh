@@ -139,6 +139,9 @@ if [ "$AEVATAR_AUDIT_ENABLED" = "1" ] && ! command -v nyxid >/dev/null 2>&1; the
   echo "nyxid CLI is required when AEVATAR_AUDIT_ENABLED=1" >&2
   exit 2
 fi
+if [ "$AEVATAR_AUDIT_ENABLED" = "1" ] && [ "$AEVATAR_AUDIT_SCOPE" = "__all__" ]; then
+  "$ROOT/scripts/aevatar-audit-preflight.sh"
+fi
 
 # gh is only load-bearing once real issue writes are enabled; a dry-run boot
 # must not require it. The issue-proxy dry-run path still runs a daily
