@@ -362,6 +362,20 @@ local function aevatar_active_query_watermark_key(source_id)
   return "audit-watcher/aevatar/active-query-watermark/" .. core.file_key(source_id)
 end
 
+local function text_byte_count(value)
+  local text = tostring(value or "")
+  return #text
+end
+
+local function nyxid_proxy_http_status(stderr)
+  local status = tostring(stderr or ""):match(
+    "Proxy request failed %(HTTP ([^%)\r\n]+)%)")
+  if status == nil then
+    return nil
+  end
+  return status:gsub("%s+", " "):sub(1, 64)
+end
+
 local function fetch_aevatar_page(config, cursor, from, to)
   local path = core.build_aevatar_audit_path(config.path, {
     take = config.take,
@@ -381,15 +395,23 @@ local function fetch_aevatar_page(config, cursor, from, to)
     },
     timeout = aevatar_timeout_seconds,
   })
-  if type(result) ~= "table" or result.exit_code ~= 0 then
-    local code = type(result) == "table" and tostring(result.exit_code) or "?"
-    local stderr = type(result) == "table" and tostring(result.stderr or "") or ""
-    error("audit-watcher: aevatar-fetch-failed: exit=" .. code
-      .. " stderr=" .. stderr:gsub("%s+", " "), 0)
+  local code = type(result) == "table" and tostring(result.exit_code) or "?"
+  local stderr = type(result) == "table" and tostring(result.stderr or "") or ""
+  local http_status = nyxid_proxy_http_status(stderr)
+  if http_status ~= nil then
+    error("audit-watcher: aevatar-fetch-failed: http=" .. http_status
+      .. " exit=" .. code, 0)
   end
-  local ok, decoded = pcall(json.decode, tostring(result.stdout or ""))
+  if type(result) ~= "table" or result.exit_code ~= 0 then
+    error("audit-watcher: aevatar-fetch-failed: exit=" .. code
+      .. " stderr-bytes=" .. tostring(text_byte_count(stderr)), 0)
+  end
+  local stdout = tostring(result.stdout or "")
+  local ok, decoded = pcall(json.decode, stdout)
   if not ok or type(decoded) ~= "table" then
-    error("audit-watcher: aevatar-bad-json: nyxid returned non-json response", 0)
+    error("audit-watcher: aevatar-bad-json: stdout-bytes="
+      .. tostring(text_byte_count(stdout))
+      .. " stderr-bytes=" .. tostring(text_byte_count(stderr)), 0)
   end
   return decoded
 end

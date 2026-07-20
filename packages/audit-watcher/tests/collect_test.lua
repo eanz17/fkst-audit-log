@@ -67,10 +67,10 @@ local function mock_aevatar_env(overrides)
   })
 end
 
-local function mock_nyxid(stdout, exit_code)
+local function mock_nyxid(stdout, exit_code, stderr)
   t.mock_command("nyxid proxy request", {
     stdout = stdout,
-    stderr = exit_code and "request failed" or "",
+    stderr = stderr or (exit_code and "request failed" or ""),
     exit_code = exit_code or 0,
   })
 end
@@ -1038,6 +1038,46 @@ return {
     t.is_true(replacement:find('"id":"audit%-repair%-new"') ~= nil)
     t.is_true(replacement:find('"id":"partial"') == nil)
     t.eq(replacement:sub(-1), "\n")
+  end,
+
+  test_aevatar_proxy_http_error_with_zero_exit_is_fetch_failure = function()
+    mock_aevatar_env({ service = "aevatar-test-http-error" })
+    mock_nyxid("", 0, "Proxy request failed (HTTP 401 Unauthorized)\n")
+    local result = run_collect(aevatar_event())
+    t.is_true(result.exit_code ~= 0)
+    t.is_true(result.error:find(
+      "audit%-watcher: aevatar%-fetch%-failed: http=401 Unauthorized exit=0") ~= nil)
+    t.is_true(result.error:find("aevatar%-bad%-json") == nil)
+  end,
+
+  test_aevatar_proxy_http_error_rejects_json_error_body = function()
+    mock_aevatar_env({ service = "aevatar-test-http-json" })
+    mock_nyxid('{"error":"SECRET_SENTINEL"}', 0,
+      "Proxy request failed (HTTP 403 Forbidden)\n")
+    local result = run_collect(aevatar_event())
+    t.is_true(result.exit_code ~= 0)
+    t.is_true(result.error:find(
+      "audit%-watcher: aevatar%-fetch%-failed: http=403 Forbidden exit=0") ~= nil)
+    t.is_true(result.error:find("SECRET_SENTINEL", 1, true) == nil)
+  end,
+
+  test_aevatar_malformed_success_reports_only_byte_counts = function()
+    mock_aevatar_env({ service = "aevatar-test-malformed" })
+    mock_nyxid("SECRET_SENTINEL", 0, "warning")
+    local result = run_collect(aevatar_event())
+    t.is_true(result.exit_code ~= 0)
+    t.is_true(result.error:find("aevatar%-bad%-json: stdout%-bytes=") ~= nil)
+    t.is_true(result.error:find("stderr%-bytes=") ~= nil)
+    t.is_true(result.error:find("SECRET_SENTINEL", 1, true) == nil)
+  end,
+
+  test_aevatar_nonzero_exit_does_not_log_raw_stderr = function()
+    mock_aevatar_env({ service = "aevatar-test-nonzero-redaction" })
+    mock_nyxid("", 7, "SECRET_SENTINEL")
+    local result = run_collect(aevatar_event())
+    t.is_true(result.exit_code ~= 0)
+    t.is_true(result.error:find("aevatar%-fetch%-failed: exit=7 stderr%-bytes=") ~= nil)
+    t.is_true(result.error:find("SECRET_SENTINEL", 1, true) == nil)
   end,
 
   test_aevatar_fetch_failure_fails_delivery_for_retry = function()
