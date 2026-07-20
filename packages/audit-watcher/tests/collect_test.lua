@@ -1046,7 +1046,7 @@ return {
     local result = run_collect(aevatar_event())
     t.is_true(result.exit_code ~= 0)
     t.is_true(result.error:find(
-      "audit%-watcher: aevatar%-fetch%-failed: http=401 Unauthorized exit=0") ~= nil)
+      "audit%-watcher: aevatar%-fetch%-failed: http=401 exit=0") ~= nil)
     t.is_true(result.error:find("aevatar%-bad%-json") == nil)
   end,
 
@@ -1057,7 +1057,17 @@ return {
     local result = run_collect(aevatar_event())
     t.is_true(result.exit_code ~= 0)
     t.is_true(result.error:find(
-      "audit%-watcher: aevatar%-fetch%-failed: http=403 Forbidden exit=0") ~= nil)
+      "audit%-watcher: aevatar%-fetch%-failed: http=403 exit=0") ~= nil)
+    t.is_true(result.error:find("SECRET_SENTINEL", 1, true) == nil)
+  end,
+
+  test_aevatar_proxy_malformed_http_status_does_not_log_raw_stderr = function()
+    mock_aevatar_env({ service = "aevatar-test-http-malformed" })
+    mock_nyxid("", 0, "Proxy request failed (HTTP SECRET_SENTINEL)\n")
+    local result = run_collect(aevatar_event())
+    t.is_true(result.exit_code ~= 0)
+    t.is_true(result.error:find(
+      "audit%-watcher: aevatar%-fetch%-failed: http=unknown exit=0") ~= nil)
     t.is_true(result.error:find("SECRET_SENTINEL", 1, true) == nil)
   end,
 

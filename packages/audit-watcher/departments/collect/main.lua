@@ -368,12 +368,13 @@ local function text_byte_count(value)
 end
 
 local function nyxid_proxy_http_status(stderr)
-  local status = tostring(stderr or ""):match(
-    "Proxy request failed %(HTTP ([^%)\r\n]+)%)")
-  if status == nil then
+  local text = tostring(stderr or "")
+  if text:find("Proxy request failed (HTTP ", 1, true) == nil then
     return nil
   end
-  return status:gsub("%s+", " "):sub(1, 64)
+  return text:match("Proxy request failed %(HTTP (%d%d%d) ")
+    or text:match("Proxy request failed %(HTTP (%d%d%d)%)")
+    or "unknown"
 end
 
 local function fetch_aevatar_page(config, cursor, from, to)

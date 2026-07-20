@@ -14,10 +14,12 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 case "$audit_path" in
-  *\?*) separator='&' ;;
-  *) separator='?' ;;
+  *\?*|*\#*)
+    echo "Aevatar audit preflight failed: AEVATAR_AUDIT_PATH must not include query parameters or fragments when scope=__all__" >&2
+    exit 2
+    ;;
 esac
-request_path="${audit_path}${separator}take=1&scope=__all__"
+request_path="${audit_path}?take=1&scope=__all__"
 stderr_file=$(mktemp "${TMPDIR:-/tmp}/fkst-aevatar-preflight.XXXXXX") || exit 2
 trap 'rm -f "$stderr_file"' 0 1 2 3 15
 
@@ -38,9 +40,13 @@ fi
 
 case "$stderr" in
   *'Proxy request failed (HTTP '*)
-    http_status=${stderr#*Proxy request failed (HTTP }
-    http_status=${http_status%%)*}
-    http_status=$(printf '%.64s' "$http_status")
+    http_status=unknown
+    status_tail=${stderr#*Proxy request failed (HTTP }
+    case "$status_tail" in
+      [0-9][0-9][0-9]\ *|[0-9][0-9][0-9]\)*)
+        http_status=$(printf '%.3s' "$status_tail")
+        ;;
+    esac
     echo "Aevatar audit preflight failed: HTTP $http_status service=$service path=$audit_path scope=__all__; NyxID must forward a bearer accepted by Aevatar admin authorization" >&2
     exit 1
     ;;

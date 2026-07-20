@@ -766,7 +766,7 @@ AEVATAR_AUDIT_TO=
 
 `scope=__all__` 需要当前 NyxID/Aevatar 身份有 Aevatar admin 权限。若只看单个默认 scope,可把 `AEVATAR_AUDIT_SCOPE` 留空。
 
-`boot.sh` 对 `scope=__all__` 执行只读 `take=1` 预检;NyxID HTTP 错误、空响应或非 JSON 响应都会在 supervisor/web 启动前 fail closed。当前 Aevatar 跨 scope 管理员校验仍要求标准 Bearer,因此 NyxID service 必须启用可被 Aevatar 接受的 access-token forwarding;仅有 Identity/Delegation header 不足。本仓库不会自动修改 NyxID service,也不会降级到单 scope。已运行的 supervisor 必须重启后才会经过该启动门禁。
+`boot.sh` 对 `scope=__all__` 执行只读 `take=1` 预检;NyxID HTTP 错误、空响应或非 JSON 响应都会在 supervisor/web 启动前 fail closed。此模式下 `AEVATAR_AUDIT_PATH` 必须是没有 query string 或 fragment 的 base path,避免预检出现重复的 `scope`/`take` 参数或把受管参数放进 fragment。当前 Aevatar 跨 scope 管理员校验仍要求标准 Bearer,因此 NyxID service 必须启用可被 Aevatar 接受的 access-token forwarding;仅有 Identity/Delegation header 不足。本仓库不会自动修改 NyxID service,也不会降级到单 scope。已运行的 supervisor 必须重启后才会经过该启动门禁。
 
 启动:
 
@@ -868,7 +868,7 @@ scripts/run.sh run audit-watcher collect \
 | `FKST_ISSUE_MAX_PER_DAY` | `1` | 每目标仓库每天最多新建 issue 数 |
 | `AEVATAR_AUDIT_ENABLED` | 未设置 | `1` 才通过 NyxID 轮询 `/api/audit/trail` |
 | `AEVATAR_AUDIT_NYXID_SERVICE` | `aevatar` | NyxID service slug |
-| `AEVATAR_AUDIT_PATH` | `/api/audit/trail` | Aevatar audit trail path |
+| `AEVATAR_AUDIT_PATH` | `/api/audit/trail` | Aevatar audit trail base path;`scope=__all__` 时不得包含 query string 或 fragment |
 | `AEVATAR_AUDIT_TAKE` | `500` | 每页条数,最大 500 |
 | `AEVATAR_AUDIT_MAX_RECORDS` | `1000` | 每次 cron 最多处理的 audit 记录数 |
 | `AEVATAR_AUDIT_MAX_PAGES_PER_TICK` | `12` | 每次 cron 最多请求页数;未耗尽时持久化 cursor,下一 tick 续读同一固定窗口 |
